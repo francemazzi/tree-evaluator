@@ -117,6 +117,31 @@ curl -X POST "http://localhost:8000/api/v1/co2/calc" \
   }'
 ```
 
+### Legenda dati (input e output)
+
+Input:
+
+- `dbh_cm`: diametro a petto d’uomo (DBH) in centimetri; float > 0.
+- `height_m`: altezza totale dell’albero in metri; float > 0.
+- `wood_density_g_cm3`: densità del legno in g/cm³ (specie-specifica, tipico 0.3–1.0); float > 0.
+- `carbon_fraction`: frazione di carbonio sulla massa secca (default 0.47); float nell’intervallo (0,1).
+- `root_shoot_ratio`: rapporto radici/fusto R:S per stimare la biomassa ipogea (default 0.24); float > 0.
+- `annual_biomass_increment_t`: incremento annuo di biomassa secca in tonnellate per albero per anno (opzionale); float ≥ 0.
+
+Output:
+
+- `agb_t`: Above-Ground Biomass (biomassa epigea) in tonnellate/albero.
+- `bgb_t`: Below-Ground Biomass (biomassa ipogea) in tonnellate/albero.
+- `total_biomass_t`: biomassa totale (AGB + BGB) in tonnellate/albero.
+- `carbon_t`: stock di carbonio in tonnellate di C/albero.
+- `co2_stock_t`: stock equivalente di CO2 in tonnellate di CO2e/albero.
+- `co2_annual_t`: assorbimento annuo di CO2 in tonnellate di CO2e/albero/anno (presente solo se fornito `annual_biomass_increment_t`).
+
+Note:
+
+- Gli input si riferiscono a un singolo albero; per ettaro moltiplica per il numero di alberi/ha.
+- Se la specie non è nota, usa una densità del legno media del bioma o locale.
+
 ### Architettura del progetto
 
 - `app/main.py`: creazione e configurazione dell’app FastAPI
