@@ -179,4 +179,26 @@ app/
   models/response.py
   models/co2.py
   main.py
+streamlit_app/
+  __init__.py
+  app.py
+  models.py
+  repository.py
+  service.py
+  ui.py
 ```
+
+### Streamlit chat demo
+
+This project includes a lightweight Streamlit demo app providing a fake chat with per-user history persisted in a local SQLite database `chat_index.db`.
+
+Run locally (inside your virtualenv after installing `requirements.txt`):
+
+```bash
+streamlit run streamlit_app/app.py
+```
+
+Notes:
+
+- The default user id is `guest` and can be changed from the sidebar.
+- Click "Clear history" in the sidebar to wipe the history for the current user.
