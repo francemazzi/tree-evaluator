@@ -22,5 +22,8 @@ services:
       - "8501:8501"
     volumes:
       - ./streamlit_app:/app/streamlit_app:ro
-      - ./chat_index.db:/app/chat_index.db
+      - ./chat_data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - CHAT_DB_PATH=/app/data/chat_index.db
     command: streamlit run streamlit_app/app.py --server.port 8501 --server.address 0.0.0.0

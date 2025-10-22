@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from .repository import ChatRepository
-from .service import ChatService
-from .ui import ChatUI
+from streamlit_app.repository import ChatRepository
+from streamlit_app.service import ChatService
+from streamlit_app.ui import ChatUI
 
 
 def main() -> None:
-    db_path = Path("chat_index.db")
+    db_path_str = os.getenv("CHAT_DB_PATH", "data/chat_index.db")
+    db_path = Path(db_path_str)
     repository = ChatRepository(db_path=db_path)
     service = ChatService(repository=repository)
     ui = ChatUI(service=service)
