@@ -132,6 +132,18 @@ class ChatRepository:
                 (datetime.now(tz=timezone.utc).isoformat(), conversation_id),
             )
 
+    def update_conversation_title(self, conversation_id: int, new_title: str) -> None:
+        """Update the title of a conversation."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE conversations
+                SET title = ?
+                WHERE id = ?
+                """,
+                (new_title, conversation_id),
+            )
+
     def delete_conversation(self, conversation_id: int) -> int:
         """Delete a conversation and all its messages (CASCADE)."""
         with self._connect() as connection:

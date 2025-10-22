@@ -15,8 +15,13 @@ class ChatService:
 
     # Conversation management
     
-    def create_new_conversation(self, user_id: str, title: str = "Nuova Chat") -> Conversation:
-        """Create a new conversation for the user."""
+    def create_new_conversation(self, user_id: str, title: Optional[str] = None) -> Conversation:
+        """Create a new conversation for the user with auto-generated title."""
+        if title is None:
+            # Generate automatic title: "Chat HH:MM-DD-MM-YYYY"
+            now = datetime.now()
+            title = f"Chat {now.strftime('%H:%M-%d-%m-%Y')}"
+        
         conversation = Conversation.new(user_id=user_id, title=title)
         conversation_id = self._repository.create_conversation(conversation)
         conversation.id = conversation_id
@@ -29,6 +34,10 @@ class ChatService:
     def get_conversation(self, conversation_id: int) -> Optional[Conversation]:
         """Get a specific conversation by ID."""
         return self._repository.get_conversation(conversation_id)
+
+    def rename_conversation(self, conversation_id: int, new_title: str) -> None:
+        """Rename a conversation."""
+        self._repository.update_conversation_title(conversation_id, new_title)
 
     def delete_conversation(self, conversation_id: int) -> int:
         """Delete a conversation and all its messages."""

@@ -24,6 +24,8 @@ class ChatUI:
             st.session_state.messages: List[ChatMessage] = []
         if "conversations" not in st.session_state:
             st.session_state.conversations: List[Conversation] = []
+        if "editing_conversation_id" not in st.session_state:
+            st.session_state.editing_conversation_id: Optional[int] = None
 
     def _load_conversations(self) -> None:
         """Load all conversations for the current user."""
@@ -69,31 +71,61 @@ class ChatUI:
             # Display conversation list
             if st.session_state.conversations:
                 for conv in st.session_state.conversations:
-                    # Highlight current conversation
-                    is_current = conv.id == st.session_state.current_conversation_id
+                    # Check if this conversation is being edited
+                    is_editing = st.session_state.editing_conversation_id == conv.id
                     
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        button_kwargs = {
-                            "label": f"{'▶️ ' if is_current else ''}{conv.title}",
-                            "key": f"conv_{conv.id}",
-                            "use_container_width": True,
-                        }
-                        if is_current:
-                            button_kwargs["type"] = "secondary"
+                    if is_editing:
+                        # Show rename input
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        with col1:
+                            new_title = st.text_input(
+                                "Rinomina",
+                                value=conv.title,
+                                key=f"rename_input_{conv.id}",
+                                label_visibility="collapsed"
+                            )
+                        with col2:
+                            if st.button("✓", key=f"save_{conv.id}", help="Salva"):
+                                if new_title.strip():
+                                    self._service.rename_conversation(conv.id, new_title.strip())
+                                    conv.title = new_title.strip()
+                                st.session_state.editing_conversation_id = None
+                                st.rerun()
+                        with col3:
+                            if st.button("✗", key=f"cancel_{conv.id}", help="Annulla"):
+                                st.session_state.editing_conversation_id = None
+                                st.rerun()
+                    else:
+                        # Normal view
+                        is_current = conv.id == st.session_state.current_conversation_id
                         
-                        if st.button(**button_kwargs):
-                            self._load_conversation_messages(conv.id)
-                            st.rerun()
-                    
-                    with col2:
-                        if st.button("🗑️", key=f"del_{conv.id}", help="Elimina conversazione"):
-                            self._service.delete_conversation(conv.id)
-                            st.session_state.conversations.remove(conv)
-                            if conv.id == st.session_state.current_conversation_id:
-                                st.session_state.current_conversation_id = None
-                                st.session_state.messages = []
-                            st.rerun()
+                        col1, col2, col3 = st.columns([3, 1, 1])
+                        with col1:
+                            button_kwargs = {
+                                "label": f"{'▶️ ' if is_current else ''}{conv.title}",
+                                "key": f"conv_{conv.id}",
+                                "use_container_width": True,
+                            }
+                            if is_current:
+                                button_kwargs["type"] = "secondary"
+                            
+                            if st.button(**button_kwargs):
+                                self._load_conversation_messages(conv.id)
+                                st.rerun()
+                        
+                        with col2:
+                            if st.button("✏️", key=f"edit_{conv.id}", help="Rinomina conversazione"):
+                                st.session_state.editing_conversation_id = conv.id
+                                st.rerun()
+                        
+                        with col3:
+                            if st.button("🗑️", key=f"del_{conv.id}", help="Elimina conversazione"):
+                                self._service.delete_conversation(conv.id)
+                                st.session_state.conversations.remove(conv)
+                                if conv.id == st.session_state.current_conversation_id:
+                                    st.session_state.current_conversation_id = None
+                                    st.session_state.messages = []
+                                st.rerun()
             else:
                 st.info("Nessuna conversazione. Crea la tua prima chat!")
 
