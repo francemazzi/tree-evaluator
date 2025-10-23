@@ -7,3 +7,16 @@ __pycache__
 *.pyw
 *.pyz
 *.pywz
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Data folders
+data/
+chat_data/
+
+# IDE
+.vscode/
+.idea/

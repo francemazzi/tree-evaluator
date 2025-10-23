@@ -18,6 +18,8 @@ class ChatUI:
         """Initialize session state variables."""
         if "user_id" not in st.session_state:
             st.session_state.user_id = "guest"
+        if "openai_api_key" not in st.session_state:
+            st.session_state.openai_api_key = ""
         if "current_conversation_id" not in st.session_state:
             st.session_state.current_conversation_id: Optional[int] = None
         if "messages" not in st.session_state:
@@ -48,12 +50,21 @@ class ChatUI:
         with st.sidebar:
             st.header("⚙️ Settings")
             
-            # User ID input
-            new_user_id = st.text_input("User ID", value=st.session_state.user_id, key="user_id_input")
-            if new_user_id != st.session_state.user_id:
-                st.session_state.user_id = new_user_id.strip() or "guest"
-                st.session_state.current_conversation_id = None
-                st.session_state.messages = []
+            # OpenAI API Key input
+            new_api_key = st.text_input(
+                "OpenAI API Key",
+                value=st.session_state.openai_api_key,
+                type="password",
+                key="api_key_input",
+                help="Inserisci la tua chiave API OpenAI (sk-...)",
+                placeholder="sk-..."
+            )
+            if new_api_key != st.session_state.openai_api_key:
+                st.session_state.openai_api_key = new_api_key.strip()
+                # Reset agent to force re-initialization with new key
+                self._service._agent = None
+                if new_api_key.strip():
+                    st.success("✅ Chiave API aggiornata!")
                 st.rerun()
 
             st.divider()
@@ -138,35 +149,81 @@ class ChatUI:
     def render(self) -> None:
         """Main render method for the chat UI."""
         self._ensure_session()
-        st.set_page_config(page_title="Tree Evaluator Chat Demo", page_icon="🌳", layout="centered")
-        st.title("🌳 Tree Evaluator — Chat Demo")
-        st.caption("Demo chat con conversazioni multiple e storico su SQLite")
+        st.set_page_config(page_title="Tree Evaluator Chat", page_icon="🌳", layout="centered")
+        st.title("🌳 Tree Evaluator — AI Chat")
+        st.caption("Chatbot intelligente con LangChain/LangGraph per analisi alberi e dataset Vienna")
 
         self._render_sidebar()
 
         # Main chat area
         if st.session_state.current_conversation_id is None:
             st.info("👈 Seleziona una conversazione dalla sidebar o creane una nuova per iniziare!")
+            
+            # Show welcome message with instructions
+            if not st.session_state.openai_api_key:
+                st.warning("""
+                ### 🔑 Configurazione richiesta
+                
+                Per usare il chatbot intelligente, inserisci la tua **OpenAI API Key** nelle impostazioni (sidebar in alto).
+                
+                **Come ottenere una chiave:**
+                1. Vai su [platform.openai.com](https://platform.openai.com/api-keys)
+                2. Crea un account o effettua il login
+                3. Genera una nuova API key (inizia con `sk-...`)
+                4. Copia e incolla la chiave nelle impostazioni
+                
+                **Senza chiave API**, il chatbot userà risposte demo di fallback.
+                """)
         else:
             self._render_messages()
 
             # Chat input
             if prompt := st.chat_input("Scrivi un messaggio…"):
+                # Check if API key is provided (warn but continue)
+                if not st.session_state.openai_api_key:
+                    st.info("ℹ️ Nessuna API key configurata. Userò risposte demo. Inserisci la chiave OpenAI nelle impostazioni per usare l'agent intelligente.")
+                
                 user_id = st.session_state.user_id
                 conversation_id = st.session_state.current_conversation_id
                 
-                # Send message and get reply
-                user_msg, assistant_msg = self._service.send_and_reply(
+                # Add user message immediately
+                user_msg = self._service.add_user_message(
                     user_id=user_id,
                     conversation_id=conversation_id,
-                    user_content=prompt
+                    content=prompt
                 )
+                st.session_state.messages.append(user_msg)
                 
-                # Update local state
-                st.session_state.messages.extend([user_msg, assistant_msg])
-                
-                # Display new messages
+                # Display user message
                 with st.chat_message("user"):
                     st.markdown(user_msg.content)
+                
+                # Stream assistant response
                 with st.chat_message("assistant"):
-                    st.markdown(assistant_msg.content)
+                    message_placeholder = st.empty()
+                    full_response = ""
+                    
+                    # Stream from agent
+                    for chunk in self._service.stream_reply(
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        last_user_message=prompt,
+                        openai_api_key=st.session_state.openai_api_key or None
+                    ):
+                        full_response = chunk
+                        # Update placeholder with current response
+                        message_placeholder.markdown(full_response + "▌")
+                    
+                    # Final update without cursor
+                    message_placeholder.markdown(full_response)
+                
+                # Add assistant message to session state
+                # (already persisted by stream_reply, just update UI state)
+                from streamlit_app.models import ChatMessage
+                assistant_msg = ChatMessage.new(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    role="assistant",
+                    content=full_response
+                )
+                st.session_state.messages.append(assistant_msg)

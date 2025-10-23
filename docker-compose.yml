@@ -22,8 +22,18 @@ services:
       - "8501:8501"
     volumes:
       - ./streamlit_app:/app/streamlit_app:ro
-      - ./chat_data:/app/data
+      - ./app:/app/app:ro
+      - ./dataset:/app/dataset:ro
+      - chat_data:/app/data
     environment:
       - PYTHONPATH=/app
       - CHAT_DB_PATH=/app/data/chat_index.db
+      # OpenAI API Key (opzionale, può essere inserita dall'UI)
+      # - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
     command: streamlit run streamlit_app/app.py --server.port 8501 --server.address 0.0.0.0
+
+volumes:
+  chat_data:
+    driver: local

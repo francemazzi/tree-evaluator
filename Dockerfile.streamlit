@@ -2,22 +2,32 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONPATH=/app
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Install minimal system dependencies
+# Set PYTHONPATH after WORKDIR so /app exists
+ENV PYTHONPATH=/app:$PYTHONPATH
+
+# Install system dependencies (including gcc for pandas/numpy compilation)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl && \
+    curl \
+    gcc \
+    g++ \
+    build-essential && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy only the Streamlit app code
+# Copy application code
 COPY streamlit_app ./streamlit_app
+COPY app ./app
+COPY dataset ./dataset
+
+# Create data directory for SQLite
+RUN mkdir -p /app/data && chmod 777 /app/data
 
 EXPOSE 8501
 

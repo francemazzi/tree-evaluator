@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tree-evaluator-api-prod
+    restart: unless-stopped
+    environment:
+      - APP_ENV=production
+      - APP_NAME=Tree Evaluator API
+      - APP_VERSION=0.1.0
+    ports:
+      - "8000:8000"
+    networks:
+      - tree-evaluator-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: Dockerfile.streamlit
+    container_name: tree-evaluator-streamlit-prod
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - chat_data:/app/data
+    environment:
+      - PYTHONPATH=/app
+      - CHAT_DB_PATH=/app/data/chat_index.db
+      # Per produzione: usa secrets manager invece di env var
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    env_file:
+      - .env
+    networks:
+      - tree-evaluator-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  tree-evaluator-network:
+    driver: bridge
+
+volumes:
+  chat_data:
+    driver: local

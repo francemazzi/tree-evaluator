@@ -25,13 +25,39 @@ Open `http://localhost:8000` and the docs at `http://localhost:8000/docs`.
 
 ### Docker
 
-Build and run:
+Build and run all services (API + Streamlit):
 
 ```bash
+# Development mode (con hot-reload)
 docker compose up --build
+
+# Solo Streamlit chatbot
+docker compose up streamlit --build
+
+# Produzione
+docker compose -f docker-compose.prod.yml up -d
 ```
 
-Then visit `http://localhost:8000`.
+Then visit:
+
+- **API**: http://localhost:8000 (docs: /docs)
+- **Streamlit Chat**: http://localhost:8501
+
+**Configurazione OpenAI API Key per Docker:**
+
+```bash
+# Opzione 1: File .env (raccomandato)
+cp .env.example .env
+# Modifica .env e inserisci: OPENAI_API_KEY=sk-...
+
+# Opzione 2: Environment variable
+OPENAI_API_KEY=sk-xxx docker compose up
+
+# Opzione 3: Dall'UI Streamlit (funziona sempre)
+# Settings → "OpenAI API Key" → inserisci chiave
+```
+
+Vedi [DOCKER.md](DOCKER.md) per configurazione avanzata.
 
 ### One-line install and run
 
@@ -147,58 +173,164 @@ Notes:
 - `app/main.py`: FastAPI app creation and configuration
 - `app/core/config.py`: application configuration (`APP_NAME`, `APP_VERSION`, `APP_ENV`)
 - `app/api/v1/router.py`: v1 routers registration
-- `app/api/v1/endpoints/`: endpoint groups (`health.py`, `co2.py`)
-- `app/services/`: OOP application logic (`health_service.py`, `co2_service.py`)
-- `app/models/`: Pydantic request/response models (`response.py`, `co2.py`)
-- `tests/`: integration tests (`test_co2_integration.py`)
+- `app/api/v1/endpoints/`: endpoint groups (`health.py`, `co2.py`, `environment.py`)
+- `app/services/`: OOP application logic (`health_service.py`, `co2_service.py`, `environment_service.py`)
+- `app/models/`: Pydantic request/response models (`response.py`, `co2.py`, `environment.py`)
+- `tests/`: integration tests
+
+### Streamlit Chat App with LangChain/LangGraph
+
+The project includes an intelligent chatbot interface built with:
+
+- **Streamlit**: Interactive web UI
+- **LangChain/LangGraph**: Agent orchestration
+- **OpenAI GPT-4**: Language model
+- **SQLite**: Conversation persistence
+
+#### Features
+
+The chatbot can:
+
+1. **Calculate CO2 sequestration** for individual trees given measurements (DBH, height, wood density)
+2. **Query the Vienna trees dataset** (BAUMKATOGD.csv) with:
+   - Filtering by district, species, plant year
+   - Aggregations and statistics
+   - Random sampling
+   - Count queries
+3. **Compute environmental estimates** (volume, biomass, carbon stock)
+4. **Maintain conversation history** with multi-session support
+
+#### Setup
+
+1. **Copy environment template:**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+2. **Add your OpenAI API key** to `.env`:
+
+   ```
+   OPENAI_API_KEY=sk-your-key-here
+   ```
+
+3. **Install dependencies:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. **Run the Streamlit app:**
+
+   ```bash
+   streamlit run streamlit_app/app.py
+   ```
+
+   Or with Docker:
+
+   ```bash
+   docker compose up streamlit
+   ```
+
+   Visit `http://localhost:8501`
+
+#### Usage Examples
+
+Ask the chatbot questions like:
+
+**Dataset queries:**
+
+- "Quanti alberi ci sono nel distretto 19?"
+- "Mostrami gli alberi Acer piantati dopo il 2000"
+- "Statistiche per distretto"
+- "Dammi 5 alberi casuali"
+
+**CO2 calculations:**
+
+- "Calcola il CO2 sequestrato da un albero con diametro 30 cm e altezza 15 metri"
+- "Quanta biomassa ha un Acer con circonferenza tronco 94 cm e altezza 12 m?"
+
+**Environmental estimates:**
+
+- "Stima il volume di un albero con diametro 25 cm"
+- "Calcola carbonio stoccato per diametro 40 cm e altezza 18 m"
+
+#### Architecture
+
+```
+streamlit_app/
+├── app.py              # Main entry point
+├── ui.py               # Streamlit UI components
+├── service.py          # Chat service with agent integration
+├── repository.py       # SQLite persistence layer
+├── models.py           # Domain models (Conversation, ChatMessage)
+├── agent.py            # LangGraph agent orchestrator
+└── tools/              # LangChain tools
+    ├── co2_tool.py           # CO2 calculation tool
+    ├── environment_tool.py   # Environmental estimates tool
+    └── dataset_tool.py       # Dataset query tool
+```
+
+The agent uses LangGraph to orchestrate tool calls:
+
+1. User sends message
+2. Agent (GPT-4) decides which tool(s) to call
+3. Tools execute (call existing FastAPI services or query dataset)
+4. Agent synthesizes response in Italian
+5. Response stored in SQLite and shown to user
+
+#### Tool Details
+
+**CO2CalculationTool**: Wraps `CO2CalculationService` from FastAPI
+
+- Calculates AGB, BGB, total biomass, carbon, CO2 stock
+- Uses Chave et al. (2014) allometric equation
+- Supports custom wood density per species
+
+**EnvironmentEstimationTool**: Wraps `EnvironmentalEstimationService`
+
+- Computes volume, biomass, carbon with alternative formulas
+- Works with/without height data
+- Provides confidence metrics
+
+**DatasetQueryTool**: Direct pandas queries on BAUMKATOGD.csv
+
+- Summary statistics (total trees, species count, districts)
+- Filtering (district, species, plant year range)
+- Aggregations (group by district/species with medians)
+- Random sampling for data exploration
+- Count queries with filters
+
+#### Configuration
+
+Environment variables (`.env`):
+
+```bash
+# Required
+OPENAI_API_KEY=your_key_here
+
+# Optional
+CHAT_DB_PATH=data/chat_index.db
+APP_ENV=development
+```
 
 ### Testing
 
-Run tests (recommended inside `.venv`):
+Run integration tests:
 
 ```bash
-pytest -q
+pytest tests/
 ```
 
-### Environment variables (optional)
+### Dataset
 
-- `APP_NAME` (default: "Tree Evaluator API")
-- `APP_VERSION` (default: "0.1.0")
-- `APP_ENV` (default: "development")
+Place your tree dataset CSV/Excel files in the `dataset/` folder. The chatbot will automatically load and query them.
 
-### Project layout
+Current dataset: **BAUMKATOGD.csv** (Vienna trees cadastre)
 
-```
-app/
-  core/config.py
-  api/v1/router.py
-  api/v1/endpoints/health.py
-  api/v1/endpoints/co2.py
-  services/health_service.py
-  services/co2_service.py
-  models/response.py
-  models/co2.py
-  main.py
-streamlit_app/
-  __init__.py
-  app.py
-  models.py
-  repository.py
-  service.py
-  ui.py
-```
+- ~230K trees
+- Columns: DISTRICT, GENUS_SPECIES, PLANT_YEAR, TRUNK_CIRCUMFERENCE, TREE_HEIGHT, CROWN_DIAMETER, coordinates, etc.
 
-### Streamlit chat demo
+### License
 
-This project includes a lightweight Streamlit demo app providing a fake chat with per-user history persisted in a local SQLite database `chat_index.db`.
-
-Run locally (inside your virtualenv after installing `requirements.txt`):
-
-```bash
-streamlit run streamlit_app/app.py
-```
-
-Notes:
-
-- The default user id is `guest` and can be changed from the sidebar.
-- Click "Clear history" in the sidebar to wipe the history for the current user.
+MIT
