@@ -75,6 +75,17 @@ class ChatRepository:
                 ON messages (conversation_id, created_at);
                 """
             )
+            
+            # Create user_settings table for persistent settings
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    openai_api_key TEXT,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
 
     # Conversation methods
     
@@ -192,5 +203,36 @@ class ChatRepository:
             )
             rows: Iterable[sqlite3.Row] = cursor.fetchall()
             return [ChatMessage.from_persistence_row(dict(r)) for r in rows]
+
+    # User settings methods
+    
+    def save_user_settings(self, user_id: str, openai_api_key: str) -> None:
+        """Save or update user settings (OpenAI API key)."""
+        from datetime import datetime, timezone
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_settings (user_id, openai_api_key, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    openai_api_key = excluded.openai_api_key,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, openai_api_key, datetime.now(tz=timezone.utc).isoformat()),
+            )
+    
+    def get_user_settings(self, user_id: str) -> Optional[dict]:
+        """Get user settings (returns dict with openai_api_key, etc.)."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT openai_api_key
+                FROM user_settings
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
 
 

@@ -19,7 +19,9 @@ class ChatUI:
         if "user_id" not in st.session_state:
             st.session_state.user_id = "guest"
         if "openai_api_key" not in st.session_state:
-            st.session_state.openai_api_key = ""
+            # Load API key from database if exists
+            saved_key = self._service.get_user_api_key(st.session_state.get("user_id", "guest"))
+            st.session_state.openai_api_key = saved_key or ""
         if "current_conversation_id" not in st.session_state:
             st.session_state.current_conversation_id: Optional[int] = None
         if "messages" not in st.session_state:
@@ -56,15 +58,17 @@ class ChatUI:
                 value=st.session_state.openai_api_key,
                 type="password",
                 key="api_key_input",
-                help="Inserisci la tua chiave API OpenAI (sk-...)",
+                help="Inserisci la tua chiave API OpenAI (sk-...). Verrà salvata in modo persistente.",
                 placeholder="sk-..."
             )
             if new_api_key != st.session_state.openai_api_key:
                 st.session_state.openai_api_key = new_api_key.strip()
+                # Save API key to database
+                if new_api_key.strip():
+                    self._service.save_user_api_key(st.session_state.user_id, new_api_key.strip())
+                    st.success("✅ Chiave API salvata!")
                 # Reset agent to force re-initialization with new key
                 self._service._agent = None
-                if new_api_key.strip():
-                    st.success("✅ Chiave API aggiornata!")
                 st.rerun()
 
             st.divider()

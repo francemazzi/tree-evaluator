@@ -44,6 +44,17 @@ class ChatService:
         """Delete a conversation and all its messages."""
         return self._repository.delete_conversation(conversation_id)
 
+    # User settings management
+    
+    def save_user_api_key(self, user_id: str, api_key: str) -> None:
+        """Save user's OpenAI API key."""
+        self._repository.save_user_settings(user_id, api_key)
+    
+    def get_user_api_key(self, user_id: str) -> Optional[str]:
+        """Get user's saved OpenAI API key."""
+        settings = self._repository.get_user_settings(user_id)
+        return settings.get("openai_api_key") if settings else None
+
     # Message management
     
     def get_conversation_messages(self, conversation_id: int) -> List[ChatMessage]:
