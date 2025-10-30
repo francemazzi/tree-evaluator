@@ -142,9 +142,12 @@ class ChatService:
         return reply
 
     def stream_reply(self, user_id: str, conversation_id: int, last_user_message: str, openai_api_key: Optional[str] = None):
-        """Stream reply from agent with real-time updates.
+        """Stream reply from agent with real-time updates including reasoning steps.
         
-        Yields chunks of the response as they are generated.
+        Yields dict with 'type' and 'content':
+        - type: 'reasoning' for internal steps, 'response' for final answer
+        - content: the text to display
+        
         Returns the complete message at the end for persistence.
         """
         agent = self._get_or_create_agent(openai_api_key=openai_api_key)
@@ -161,7 +164,9 @@ class ChatService:
                 # Stream response from agent
                 full_response = ""
                 for chunk in agent.stream_chat(last_user_message, history=history_dicts):
-                    full_response = chunk  # Agent yields full content each time
+                    # chunk is a dict with 'type' and 'content'
+                    if chunk.get("type") == "response":
+                        full_response = chunk.get("content", "")
                     yield chunk
                 
                 # After streaming, save complete message
@@ -177,10 +182,12 @@ class ChatService:
                     
             except Exception as e:
                 print(f"Warning: Agent streaming failed: {e}")
+                import traceback
+                traceback.print_exc()
                 # Fallback
                 timestamp = datetime.utcnow().strftime("%H:%M:%S")
-                fallback_text = f"Echo ({timestamp}): {last_user_message} [fallback]"
-                yield fallback_text
+                fallback_text = f"Echo ({timestamp}): {last_user_message} [fallback - {str(e)}]"
+                yield {"type": "response", "content": fallback_text}
                 
                 reply = ChatMessage.new(
                     user_id=user_id,
@@ -194,7 +201,7 @@ class ChatService:
             # No agent, use demo
             timestamp = datetime.utcnow().strftime("%H:%M:%S")
             fallback_text = f"Echo ({timestamp}): {last_user_message} [demo]"
-            yield fallback_text
+            yield {"type": "response", "content": fallback_text}
             
             reply = ChatMessage.new(
                 user_id=user_id,

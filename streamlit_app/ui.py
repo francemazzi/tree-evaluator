@@ -204,7 +204,11 @@ class ChatUI:
                 
                 # Stream assistant response
                 with st.chat_message("assistant"):
-                    message_placeholder = st.empty()
+                    # Create container for reasoning steps
+                    reasoning_placeholder = st.empty()
+                    response_placeholder = st.empty()
+                    
+                    reasoning_steps = []
                     full_response = ""
                     
                     # Stream from agent
@@ -214,12 +218,31 @@ class ChatUI:
                         last_user_message=prompt,
                         openai_api_key=st.session_state.openai_api_key or None
                     ):
-                        full_response = chunk
-                        # Update placeholder with current response
-                        message_placeholder.markdown(full_response + "▌")
+                        chunk_type = chunk.get("type", "response")
+                        chunk_content = chunk.get("content", "")
+                        
+                        if chunk_type == "reasoning":
+                            # Add reasoning step
+                            reasoning_steps.append(chunk_content)
+                            # Update reasoning display
+                            reasoning_text = "\n\n".join(reasoning_steps)
+                            reasoning_placeholder.markdown(f"```\n🧠 Processo di ragionamento:\n\n{reasoning_text}\n```")
+                        
+                        elif chunk_type == "response":
+                            # Update final response
+                            full_response = chunk_content
+                            # Show reasoning in collapsed state
+                            if reasoning_steps:
+                                with reasoning_placeholder:
+                                    with st.expander("🧠 Processo di ragionamento", expanded=False):
+                                        for step in reasoning_steps:
+                                            st.markdown(step)
+                                            st.divider()
+                            response_placeholder.markdown(full_response + "▌")
                     
                     # Final update without cursor
-                    message_placeholder.markdown(full_response)
+                    if full_response:
+                        response_placeholder.markdown(full_response)
                 
                 # Add assistant message to session state
                 # (already persisted by stream_reply, just update UI state)
