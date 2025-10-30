@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import List, Optional
 
+import plotly.graph_objects as go
 import streamlit as st
 
 from streamlit_app.models import ChatMessage, Conversation
@@ -144,11 +146,92 @@ class ChatUI:
             else:
                 st.info("Nessuna conversazione. Crea la tua prima chat!")
 
+    def _extract_chart_from_response(self, content: str) -> tuple[str, Optional[dict]]:
+        """Extract chart JSON from assistant response if present.
+        
+        Returns:
+            Tuple of (text_content, chart_data_dict or None)
+        """
+        # Look for chart data between markers
+        print(f"[DEBUG UI] Checking for chart markers in response (length: {len(content)})")
+        print(f"[DEBUG UI] Has CHART_DATA_START: {'CHART_DATA_START' in content}")
+        print(f"[DEBUG UI] Has CHART_DATA_END: {'CHART_DATA_END' in content}")
+        
+        if "CHART_DATA_START" in content and "CHART_DATA_END" in content:
+            try:
+                start_marker = "CHART_DATA_START"
+                end_marker = "CHART_DATA_END"
+                
+                start_idx = content.find(start_marker) + len(start_marker)
+                end_idx = content.find(end_marker)
+                
+                if start_idx > len(start_marker) and end_idx > start_idx:
+                    json_str = content[start_idx:end_idx].strip()
+                    print(f"[DEBUG UI] Extracted JSON string length: {len(json_str)}")
+                    chart_data = json.loads(json_str)
+                    print(f"[DEBUG UI] Successfully parsed chart JSON! Has chart_json: {'chart_json' in chart_data}")
+                    
+                    if chart_data.get("success") and "chart_json" in chart_data:
+                        # Remove chart data section from text
+                        text_before = content[:content.find(start_marker)].strip()
+                        text_after = content[content.find(end_marker) + len(end_marker):].strip()
+                        text_content = (text_before + " " + text_after).strip()
+                        print(f"[DEBUG UI] Chart extraction successful!")
+                        return text_content, chart_data
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"[ERROR UI] Error parsing chart data: {e}")
+        
+        # Fallback: try old method (for backward compatibility)
+        if "chart_json" in content.lower() or '"success": true' in content:
+            try:
+                # Try to extract JSON object from text
+                start_idx = content.find('{')
+                end_idx = content.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    json_str = content[start_idx:end_idx+1]
+                    chart_data = json.loads(json_str)
+                    if chart_data.get("success") and "chart_json" in chart_data:
+                        # Remove JSON from text
+                        text_before = content[:start_idx].strip()
+                        text_after = content[end_idx+1:].strip()
+                        text_content = (text_before + " " + text_after).strip()
+                        return text_content, chart_data
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        return content, None
+    
     def _render_messages(self) -> None:
         """Render all messages in the current conversation."""
         for message in st.session_state.messages:
             with st.chat_message(message.role):
-                st.markdown(message.content)
+                # Check if message contains chart data
+                if message.role == "assistant":
+                    text_content, chart_data = self._extract_chart_from_response(message.content)
+                    
+                    if chart_data and chart_data.get("success"):
+                        # Display text content
+                        if text_content:
+                            st.markdown(text_content)
+                        
+                        # Display chart
+                        try:
+                            chart_json = chart_data["chart_json"]
+                            fig = go.Figure(json.loads(chart_json))
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Show chart info
+                            with st.expander("ℹ️ Dettagli grafico"):
+                                st.write(f"**Tipo:** {chart_data.get('chart_type', 'N/A')}")
+                                st.write(f"**Punti dati:** {chart_data.get('data_points', 'N/A')}")
+                                if "sql_executed" in chart_data:
+                                    st.code(chart_data["sql_executed"], language="sql")
+                        except Exception as e:
+                            st.error(f"Errore nella visualizzazione del grafico: {e}")
+                    else:
+                        st.markdown(message.content)
+                else:
+                    st.markdown(message.content)
 
     def render(self) -> None:
         """Main render method for the chat UI."""
@@ -207,9 +290,11 @@ class ChatUI:
                     # Create container for reasoning steps
                     reasoning_placeholder = st.empty()
                     response_placeholder = st.empty()
+                    chart_placeholder = st.empty()
                     
                     reasoning_steps = []
                     full_response = ""
+                    chart_data = None
                     
                     # Stream from agent
                     for chunk in self._service.stream_reply(
@@ -238,11 +323,42 @@ class ChatUI:
                                         for step in reasoning_steps:
                                             st.markdown(step)
                                             st.divider()
-                            response_placeholder.markdown(full_response + "▌")
+                            
+                            # Check if response contains chart data
+                            text_content, extracted_chart = self._extract_chart_from_response(full_response)
+                            
+                            if extracted_chart and extracted_chart.get("success"):
+                                chart_data = extracted_chart
+                                response_placeholder.markdown(text_content + "▌")
+                            else:
+                                response_placeholder.markdown(full_response + "▌")
                     
                     # Final update without cursor
                     if full_response:
-                        response_placeholder.markdown(full_response)
+                        text_content, extracted_chart = self._extract_chart_from_response(full_response)
+                        
+                        if extracted_chart and extracted_chart.get("success"):
+                            # Display text without chart JSON
+                            if text_content:
+                                response_placeholder.markdown(text_content)
+                            
+                            # Display chart
+                            with chart_placeholder:
+                                try:
+                                    chart_json = extracted_chart["chart_json"]
+                                    fig = go.Figure(json.loads(chart_json))
+                                    st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    # Show chart info
+                                    with st.expander("ℹ️ Dettagli grafico"):
+                                        st.write(f"**Tipo:** {extracted_chart.get('chart_type', 'N/A')}")
+                                        st.write(f"**Punti dati:** {extracted_chart.get('data_points', 'N/A')}")
+                                        if "sql_executed" in extracted_chart:
+                                            st.code(extracted_chart["sql_executed"], language="sql")
+                                except Exception as e:
+                                    st.error(f"Errore nella visualizzazione del grafico: {e}")
+                        else:
+                            response_placeholder.markdown(full_response)
                 
                 # Add assistant message to session state
                 # (already persisted by stream_reply, just update UI state)

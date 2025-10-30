@@ -197,8 +197,9 @@ The chatbot can:
    - Aggregations and statistics
    - Random sampling
    - Count queries
-3. **Compute environmental estimates** (volume, biomass, carbon stock)
-4. **Maintain conversation history** with multi-session support
+3. **Generate interactive charts** (bar, pie, line, scatter, histogram, box plots) from the dataset
+4. **Compute environmental estimates** (volume, biomass, carbon stock)
+5. **Maintain conversation history** with multi-session support
 
 #### Setup
 
@@ -250,6 +251,14 @@ Ask the chatbot questions like:
 - "Calcola il CO2 sequestrato da un albero con diametro 30 cm e altezza 15 metri"
 - "Quanta biomassa ha un Acer con circonferenza tronco 94 cm e altezza 12 m?"
 
+**Chart generation:**
+
+- "Crea un grafico a barre dei distretti con più alberi"
+- "Mostra un grafico a torta delle 5 specie più comuni"
+- "Fai un istogramma dell'età degli alberi"
+- "Crea un grafico a linee delle piantumazioni per anno dal 1950"
+- "Mostra un box plot della circonferenza per le specie principali"
+
 **Environmental estimates:**
 
 - "Stima il volume di un albero con diametro 25 cm"
@@ -260,7 +269,7 @@ Ask the chatbot questions like:
 ```
 streamlit_app/
 ├── app.py              # Main entry point
-├── ui.py               # Streamlit UI components
+├── ui.py               # Streamlit UI components (with chart visualization)
 ├── service.py          # Chat service with agent integration
 ├── repository.py       # SQLite persistence layer
 ├── models.py           # Domain models (Conversation, ChatMessage)
@@ -268,7 +277,8 @@ streamlit_app/
 └── tools/              # LangChain tools
     ├── co2_tool.py           # CO2 calculation tool
     ├── environment_tool.py   # Environmental estimates tool
-    └── dataset_tool.py       # Dataset query tool
+    ├── dataset_tool.py       # Dataset query tool
+    └── chart_tool.py         # ⭐ NEW: Interactive chart generation tool
 ```
 
 The agent uses LangGraph to orchestrate tool calls:
@@ -293,13 +303,25 @@ The agent uses LangGraph to orchestrate tool calls:
 - Works with/without height data
 - Provides confidence metrics
 
-**DatasetQueryTool**: Direct pandas queries on BAUMKATOGD.csv
+**DatasetQueryTool**: Direct SQL queries on BAUMKATOGD database
 
 - Summary statistics (total trees, species count, districts)
 - Filtering (district, species, plant year range)
 - Aggregations (group by district/species with medians)
 - Random sampling for data exploration
 - Count queries with filters
+- Natural language to SQL translation with LLM
+
+**ChartGenerationTool**: Interactive chart generation with Plotly
+
+- 6 chart types: bar, pie, line, scatter, histogram, box plot
+- Natural language query translation to optimized SQL
+- Automatic chart configuration based on data type
+- Interactive visualizations with zoom, pan, hover
+- Export-ready charts (HTML, PNG, SVG)
+- Supports custom titles and axis labels
+
+See [CHART_TOOL_GUIDE.md](CHART_TOOL_GUIDE.md) for detailed documentation and examples.
 
 #### Configuration
 

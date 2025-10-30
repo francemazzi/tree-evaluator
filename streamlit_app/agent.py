@@ -11,6 +11,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
@@ -26,6 +27,9 @@ class AgentState(TypedDict):
     optimized_query: Optional[str]
     tasks: Optional[List[str]]
     validation_result: Optional[dict]
+    context_summary: Optional[str]  # Summary of important context
+    message_count: Optional[int]  # Track conversation length
+    chart_data: Optional[dict]  # Store chart data when chart tool is called
 
 
 class TreeEvaluatorAgent:
@@ -56,6 +60,7 @@ class TreeEvaluatorAgent:
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
             DatasetQueryTool(llm=self._base_llm),
+            ChartGenerationTool(llm=self._base_llm),
         ]
 
         # Initialize LLM with tools bound
@@ -69,13 +74,17 @@ class TreeEvaluatorAgent:
         workflow = StateGraph(AgentState)
 
         # Define nodes
+        workflow.add_node("context_manager", self._manage_context)
         workflow.add_node("query_optimizer", self._optimize_query)
         workflow.add_node("agent", self._call_model)
         workflow.add_node("tools", ToolNode(self._tools))
         workflow.add_node("validator", self._validate_response)
 
-        # Set entry point - start with query optimization
-        workflow.set_entry_point("query_optimizer")
+        # Set entry point - start with context management
+        workflow.set_entry_point("context_manager")
+        
+        # Context manager -> query optimizer
+        workflow.add_edge("context_manager", "query_optimizer")
 
         # Query optimizer -> agent
         workflow.add_edge("query_optimizer", "agent")
@@ -105,6 +114,62 @@ class TreeEvaluatorAgent:
 
         return workflow.compile()
 
+    def _manage_context(self, state: AgentState) -> dict:
+        """Manage conversation context to avoid token limit issues."""
+        messages = list(state["messages"])
+        
+        # Configuration
+        MAX_MESSAGES = 3  # Keep only last N message pairs (user + assistant)
+        MAX_MESSAGE_LENGTH = 50000  # Max characters per message
+        
+        # Count current messages
+        message_count = len(messages)
+        
+        # If conversation is too long, trim it
+        if message_count > MAX_MESSAGES:
+            # Always keep system messages
+            system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+            
+            # Keep only the most recent messages (excluding system)
+            recent_messages = [m for m in messages if not isinstance(m, SystemMessage)][-MAX_MESSAGES:]
+            
+            # Create a summary of removed context
+            removed_count = len(messages) - len(system_messages) - len(recent_messages)
+            
+            if removed_count > 0:
+                context_note = SystemMessage(
+                    content=f"[Nota: {removed_count} messaggi precedenti rimossi per gestione contesto. "
+                    f"Concentrati sulla richiesta corrente dell'utente.]"
+                )
+                messages = system_messages + [context_note] + recent_messages
+        
+        # Compress very long messages (like detailed statistics)
+        compressed_messages = []
+        for msg in messages:
+            if isinstance(msg, AIMessage) and msg.content and len(msg.content) > MAX_MESSAGE_LENGTH:
+                # If it's a very long AI response, create a summary
+                if "DBH" in msg.content or "distretto" in msg.content or "specie" in msg.content:
+                    # Looks like dataset statistics - compress it
+                    summary = (
+                        "[Statistiche dataset precedenti - riepilogo compresso]\n"
+                        "Dataset analizzato con successo. "
+                        "Per nuove analisi o grafici, specifica la tua richiesta."
+                    )
+                    compressed_msg = AIMessage(content=summary)
+                    compressed_messages.append(compressed_msg)
+                else:
+                    # Keep as is but truncate
+                    truncated_content = msg.content[:MAX_MESSAGE_LENGTH] + "\n\n[... messaggio troncato per gestione contesto]"
+                    compressed_msg = AIMessage(content=truncated_content)
+                    compressed_messages.append(compressed_msg)
+            else:
+                compressed_messages.append(msg)
+        
+        return {
+            "messages": compressed_messages,
+            "message_count": len(compressed_messages)
+        }
+
     def _optimize_query(self, state: AgentState) -> dict:
         """Optimize user query and break it into tasks."""
         messages = state["messages"]
@@ -128,9 +193,11 @@ Domanda originale: {last_user_msg}
 
 Rispondi in formato JSON con:
 - "optimized_query": la domanda ottimizzata
-- "tasks": lista di task specifici da completare
+- "tasks": lista di task specifici da completare (minimo 2-3 task)
 
-Esempio:
+Esempi:
+
+Esempio 1 - Calcolo CO2:
 {{
     "optimized_query": "Calcola il sequestro di CO2 per un albero di Acer di 30cm DBH e 15m altezza",
     "tasks": [
@@ -138,6 +205,28 @@ Esempio:
         "Calcolare il volume utilizzando DBH (30cm) e altezza (15m)",
         "Calcolare la biomassa e il sequestro di CO2",
         "Presentare i risultati in modo chiaro"
+    ]
+}}
+
+Esempio 2 - Grafico:
+{{
+    "optimized_query": "Crea un grafico a torta che mostri la distribuzione dei diametri degli alberi a Vienna",
+    "tasks": [
+        "Interrogare il dataset per ottenere i dati sui diametri degli alberi a Vienna",
+        "Raggruppare i dati in categorie di diametro appropriate",
+        "Generare un grafico a torta con i dati raggruppati",
+        "Presentare il grafico con etichette chiare"
+    ]
+}}
+
+Esempio 3 - Query Dataset:
+{{
+    "optimized_query": "Trova le 10 specie più comuni a Vienna e conta quanti alberi ci sono per ciascuna",
+    "tasks": [
+        "Interrogare il dataset per estrarre tutte le specie presenti",
+        "Raggruppare per specie e contare il numero di alberi",
+        "Ordinare per numero di alberi in ordine decrescente",
+        "Selezionare le prime 10 specie e presentare i risultati"
     ]
 }}"""
         
@@ -198,14 +287,27 @@ Task da completare:
 1. **CO2 Calculation Tool**: Calculate CO2 sequestration and biomass for individual trees given their measurements.
 2. **Environmental Estimation Tool**: Compute volume, biomass, and carbon stock using alternative formulas.
 3. **Dataset Query Tool**: Query a real Vienna trees dataset (BAUMKATOGD) with filtering, aggregation, and statistics.
+4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
+- When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
 - Always provide clear, helpful responses in Italian.
 - If you need more information, ask the user.
 - When using tools, explain the results in a user-friendly way.
 - For wood density, use species-specific values if known, otherwise default to 0.6 g/cm³.
+
+**IMPORTANT - Chart Tool Usage:**
+When you use the chart generation tool and it returns chart data with "success": true, you MUST include the COMPLETE JSON response in your answer. Format it exactly like this:
+
+Ho creato il grafico richiesto.
+
+CHART_DATA_START
+{the complete JSON from the tool}
+CHART_DATA_END
+
+Do not modify or summarize the JSON - include it verbatim between CHART_DATA_START and CHART_DATA_END markers.
 
 Common wood densities (g/cm³):
 - Acer (Acero): 0.56
@@ -397,6 +499,7 @@ Per favore, completa la risposta affrontando i task mancanti."""
         final_response = None
         retry_count = 0
         max_retries = 2
+        chart_data_json = None  # Track chart data if generated
 
         # Stream from graph with updates mode to see each node
         for event in self._graph.stream({"messages": messages}, stream_mode="updates"):
@@ -404,7 +507,19 @@ Per favore, completa la risposta affrontando i task mancanti."""
             for node_name, node_output in event.items():
                 
                 # Emit reasoning for each node
-                if node_name == "query_optimizer":
+                if node_name == "context_manager":
+                    # Show context management info if messages were compressed
+                    message_count = node_output.get("message_count", 0)
+                    original_count = len(messages)
+                    
+                    if message_count < original_count:
+                        reasoning = f"🧹 **Gestione Contesto**\n\n"
+                        reasoning += f"Messaggi originali: {original_count}\n"
+                        reasoning += f"Messaggi ottimizzati: {message_count}\n"
+                        reasoning += f"Contesto lungo compresso per evitare limiti di token.\n"
+                        yield {"type": "reasoning", "content": reasoning}
+                
+                elif node_name == "query_optimizer":
                     optimized = node_output.get("optimized_query", "")
                     tasks = node_output.get("tasks", [])
                     if optimized:
@@ -423,20 +538,113 @@ Per favore, completa la risposta affrontando i task mancanti."""
                         last_msg = node_messages[-1]
                         if isinstance(last_msg, AIMessage):
                             if last_msg.tool_calls:
-                                # Agent is calling tools
+                                # Agent is calling tools - show detailed parameters
                                 reasoning = f"🛠️ **Chiamata Tool**\n\n"
                                 for tool_call in last_msg.tool_calls:
                                     tool_name = tool_call.get("name", "unknown")
-                                    reasoning += f"- Utilizzo: `{tool_name}`\n"
+                                    tool_args = tool_call.get("args", {})
+                                    
+                                    reasoning += f"- **Tool**: `{tool_name}`\n"
+                                    
+                                    # Show parameters based on tool type
+                                    if tool_name == "query_tree_dataset":
+                                        natural_q = tool_args.get("natural_query", "N/A")
+                                        reasoning += f"  - **Query**: _{natural_q}_\n"
+                                    elif tool_name == "calculate_co2":
+                                        dbh = tool_args.get("dbh_cm", "N/A")
+                                        height = tool_args.get("height_m", "N/A")
+                                        wood_density = tool_args.get("wood_density", "N/A")
+                                        reasoning += f"  - **DBH**: {dbh} cm\n"
+                                        reasoning += f"  - **Altezza**: {height} m\n"
+                                        reasoning += f"  - **Densità legno**: {wood_density} g/cm³\n"
+                                    elif tool_name == "estimate_environment":
+                                        dbh = tool_args.get("dbh_cm", "N/A")
+                                        height = tool_args.get("height_m", "N/A")
+                                        reasoning += f"  - **DBH**: {dbh} cm\n"
+                                        reasoning += f"  - **Altezza**: {height} m\n"
+                                    elif tool_name == "generate_chart":
+                                        chart_type = tool_args.get("chart_type", "N/A")
+                                        reasoning += f"  - **Tipo grafico**: {chart_type}\n"
+                                    
+                                    reasoning += "\n"
+                                
                                 yield {"type": "reasoning", "content": reasoning}
                             elif last_msg.content and not last_msg.tool_calls:
                                 # Agent has a response (might be intermediate or final)
                                 final_response = last_msg.content
                 
                 elif node_name == "tools":
-                    # Tool execution completed
-                    reasoning = f"✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
-                    yield {"type": "reasoning", "content": reasoning}
+                    # Tool execution completed - show detailed results
+                    node_messages = node_output.get("messages", [])
+                    
+                    if node_messages:
+                        for msg in node_messages:
+                            # Tool messages contain the results
+                            if hasattr(msg, 'content') and msg.content:
+                                try:
+                                    # Try to parse as JSON for structured results
+                                    import json
+                                    if isinstance(msg.content, str):
+                                        result_data = json.loads(msg.content)
+                                    else:
+                                        result_data = msg.content
+                                    
+                                    # Check if this is chart data (chart tool returns "chart_json" key)
+                                    if "chart_json" in result_data and result_data.get("success"):
+                                        chart_data_json = json.dumps(result_data, ensure_ascii=False, indent=2)
+                                        print(f"[DEBUG] Chart data captured! Length: {len(chart_data_json)} chars")
+                                    
+                                    reasoning = f"✅ **Risultati Tool**\n\n"
+                                    
+                                    # Show SQL query if it's a dataset query
+                                    if "sql_executed" in result_data:
+                                        sql = result_data.get("sql_executed", "")
+                                        reasoning += f"**Query SQL generata:**\n```sql\n{sql}\n```\n\n"
+                                    
+                                    # Show row count
+                                    if "row_count" in result_data:
+                                        row_count = result_data.get("row_count", 0)
+                                        reasoning += f"📊 **Righe trovate**: {row_count}\n\n"
+                                    
+                                    # Show result preview for dataset queries
+                                    if "results" in result_data:
+                                        results = result_data.get("results", [])
+                                        if results and len(results) > 0:
+                                            reasoning += f"**Primi risultati:**\n"
+                                            # Show first 3 results as preview
+                                            for i, row in enumerate(results[:3], 1):
+                                                reasoning += f"{i}. "
+                                                # Show main fields
+                                                if "genus_species" in row:
+                                                    reasoning += f"Specie: {row['genus_species']} "
+                                                if "count" in row:
+                                                    reasoning += f"Count: {row['count']} "
+                                                if "district" in row:
+                                                    reasoning += f"Distretto: {row['district']} "
+                                                if "trunk_circumference" in row:
+                                                    reasoning += f"Circonferenza: {row['trunk_circumference']}cm "
+                                                reasoning += "\n"
+                                            
+                                            if len(results) > 3:
+                                                reasoning += f"... e altri {len(results) - 3} risultati\n"
+                                    
+                                    # Show single value results
+                                    elif "result" in result_data and "column" in result_data:
+                                        result_val = result_data.get("result")
+                                        column_name = result_data.get("column")
+                                        reasoning += f"**{column_name}**: {result_val}\n"
+                                    
+                                    # Show CO2 calculation results
+                                    if "co2_sequestration_kg" in result_data:
+                                        co2 = result_data.get("co2_sequestration_kg", 0)
+                                        reasoning += f"🌱 **CO2 sequestrato**: {co2} kg\n"
+                                    
+                                    yield {"type": "reasoning", "content": reasoning}
+                                    
+                                except (json.JSONDecodeError, AttributeError):
+                                    # If not JSON, just show completion message
+                                    reasoning = f"✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
+                                    yield {"type": "reasoning", "content": reasoning}
                 
                 elif node_name == "validator":
                     validation = node_output.get("validation_result", {})
@@ -450,19 +658,25 @@ Per favore, completa la risposta affrontando i task mancanti."""
                         if retry_count > max_retries:
                             reasoning = f"⚠️ **Validazione**\n\nRaggiunto limite retry. Proseguo con la risposta attuale.\n"
                             yield {"type": "reasoning", "content": reasoning}
-                            break
-                        
-                        missing = validation.get("missing_tasks", [])
-                        feedback = validation.get("feedback", "")
-                        reasoning = f"⚠️ **Validazione (Tentativo {retry_count})**\n\n"
-                        if missing:
-                            reasoning += f"Task mancanti: {', '.join(missing)}\n"
-                        if feedback:
-                            reasoning += f"\n{feedback}\n"
-                        reasoning += "\nRielaborazione risposta...\n"
-                        yield {"type": "reasoning", "content": reasoning}
+                            # Don't break - let the graph complete naturally
+                        else:
+                            missing = validation.get("missing_tasks", [])
+                            feedback = validation.get("feedback", "")
+                            reasoning = f"⚠️ **Validazione (Tentativo {retry_count})**\n\n"
+                            if missing:
+                                reasoning += f"Task mancanti: {', '.join(missing)}\n"
+                            if feedback:
+                                reasoning += f"\n{feedback}\n"
+                            reasoning += "\nRielaborazione risposta...\n"
+                            yield {"type": "reasoning", "content": reasoning}
         
         # Yield final response
         if final_response:
+            # If we have chart data but it's not in the response, add it automatically
+            print(f"[DEBUG] Final response check - chart_data_json: {chart_data_json is not None}, has markers: {'CHART_DATA_START' in final_response}")
+            if chart_data_json and "CHART_DATA_START" not in final_response:
+                print(f"[DEBUG] Adding chart data to response!")
+                final_response = f"{final_response}\n\nCHART_DATA_START\n{chart_data_json}\nCHART_DATA_END"
+            
             yield {"type": "response", "content": final_response}
 

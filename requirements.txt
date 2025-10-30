@@ -11,6 +11,7 @@ streamlit==1.39.0
 # Data analysis
 pandas==2.2.2
 openpyxl==3.1.5
+plotly==5.24.1
 
 # LangChain/LangGraph
 langchain==0.3.1
