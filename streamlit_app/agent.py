@@ -44,19 +44,22 @@ class TreeEvaluatorAgent:
                 "OpenAI API key not found. Provide it via UI Settings or set OPENAI_API_KEY environment variable."
             )
 
-        # Initialize tools
+        # Initialize LLM (used by tools for text-to-SQL translation)
+        self._base_llm = ChatOpenAI(
+            model="gpt-5",
+            temperature=1,  # Low temperature for SQL generation
+            api_key=api_key,
+        )
+
+        # Initialize tools with LLM
         self._tools = [
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
-            DatasetQueryTool(),
+            DatasetQueryTool(llm=self._base_llm),
         ]
 
-        # Initialize LLM with tools
-        self._llm = ChatOpenAI(
-            model="gpt-5",
-            temperature=1,
-            api_key=api_key,
-        ).bind_tools(self._tools)
+        # Initialize LLM with tools bound
+        self._llm = self._base_llm.bind_tools(self._tools)
 
         # Build graph
         self._graph = self._build_graph()
