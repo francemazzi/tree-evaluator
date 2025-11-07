@@ -1,0 +1,11 @@
+id;domanda;risposta numerica;risposta estesa;type
+1;Quanti distretti ci sono a vienna?;23;“A Vienna ci sono 23 distretti”;dataset_vienna
+2;Quali alberi ci sono in totale a Vienna?;229.298;“Gli alberi totali a Vienna sono 229.998 alberi sommando tutti i distretti”;dataset_vienna
+3;Quanti alberi ci sono nel distretto 2;21.363;“Nel distretto 2 sono presenti esattamente 21.363 alberi”;dataset_vienna
+4;Quante specie di alberi ci sono nel distretto 1;230;“Le specie piantate nel distretto 1 sono in totale 230 specie”.;dataset_vienna
+5;Quali sono le 5 specie più presenti nel distretto 1;;“Ecco le 5 specie più presenti nel distretto 1: Celtis australis (Südlicher Zürgelbaum)(965), Acer platanoides (Spitzahorn)(602), Platanus x acerifolia (Ahornblättrige Platane) (245), Acer pseudoplatanus (Bergahorn)(199), Tilia cordata 'Greenspire' (Stadtlinde)(152)”;dataset_vienna
+6;Individua specie piantate che non sono autoctone del posto.;;Le specie non autoctone presenti a Vienna sono: Robinia pseudoacacia, Ailanthus altissima, Acer negundo, Quercus rubra, Aesculus hippocastanum, Prunus cerasifera, Acer saccharinum, Pinus nigra (non autoctono di Vienna ma presente in austria);dataset_vienna.               (potrebbe non darti risposta perché non ha altre info, ma potrebbe anche nominare altre specie ma se ci ritorna almeno queste allora siamo a un buon passo)
+7;Mostra i 10 distretti con la migliore qualità dei dati.;;;
+8;Quale è il distretto con più alberi?;22;“Il distretto con più alberi è il distretto 22 con esattamente 33612 alberi”;
+10;Quale è l’albero più vecchio del dataset?;;“L’albero più vecchio del dataset è stato piantato nel 1658” ;
+11;;;;
