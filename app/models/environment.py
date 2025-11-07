@@ -123,7 +123,7 @@ class EnvironmentalEstimatesResponse(BaseModel):
     citations: List[Citation]
     logging: LoggingInfo
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
 
 class ErrorDetail(BaseModel):

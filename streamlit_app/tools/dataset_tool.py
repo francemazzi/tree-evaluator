@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
+from langchain_core.documents import Document
 from langchain_core.tools import BaseTool
+from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_openai import OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
 
@@ -69,6 +73,7 @@ class DatasetQueryTool(BaseTool):
 
     _db_path: Path
     _llm: Any = None
+    _embeddings: Optional[OpenAIEmbeddings] = None
 
     def __init__(self, db_path: Optional[Path] = None, llm: Any = None, **kwargs):
         super().__init__(**kwargs)
@@ -76,6 +81,9 @@ class DatasetQueryTool(BaseTool):
             db_path = Path(__file__).parent.parent.parent / "dataset" / "BAUMKATOGD.db"
         object.__setattr__(self, "_db_path", db_path)
         object.__setattr__(self, "_llm", llm)
+        
+        # Initialize embeddings for vector search (lazy initialization)
+        object.__setattr__(self, "_embeddings", None)
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
@@ -111,10 +119,12 @@ IMPORTANT NOTES:
 2. Current year is {current_year} (use for age calculations)
 3. DBH (diameter) = trunk_circumference / {math.pi}
 4. Age = {current_year} - plant_year
-5. Use LIMIT to avoid returning too many rows (max 100 for SELECT *, max 20 for aggregations)
+5. **ALWAYS USE LIMIT** - NEVER return all rows without LIMIT (max 100 for SELECT *, max 20 for aggregations, LIMIT 1 for single results)
 6. For "mostrami" or "dammi" queries, use SELECT with LIMIT
 7. For species searches, use LIKE with % wildcards (case-insensitive)
 8. Common species keywords: Acer (acero), Tilia (tiglio), Quercus (quercia), Fraxinus (frassino)
+9. For "oldest/newest/largest/smallest" queries, use ORDER BY with LIMIT 1 or LIMIT 10
+10. NEVER use SELECT * without LIMIT - always specify columns and LIMIT
 
 USER QUESTION: {natural_query}
 
@@ -145,6 +155,12 @@ SQL: SELECT objectid, genus_species, trunk_circumference, district FROM baumkato
 Question: "Età media alberi distretto 10"
 SQL: SELECT ROUND(AVG({current_year} - plant_year), 1) as avg_age FROM baumkatogd WHERE district = 10 AND plant_year > 0
 
+Question: "Qual è l'albero più vecchio?"
+SQL: SELECT objectid, genus_species, plant_year, district, ({current_year} - plant_year) as age FROM baumkatogd WHERE plant_year > 0 ORDER BY plant_year ASC LIMIT 1
+
+Question: "Mostra i 10 alberi più vecchi"
+SQL: SELECT objectid, genus_species, plant_year, district, ({current_year} - plant_year) as age FROM baumkatogd WHERE plant_year > 0 ORDER BY plant_year ASC LIMIT 10
+
 Now translate this question:
 {natural_query}"""
         
@@ -172,8 +188,73 @@ Now translate this question:
         return sql
     
 
-    def _execute_sql(self, conn: sqlite3.Connection, sql: str) -> Dict[str, Any]:
+    def _init_embeddings(self) -> OpenAIEmbeddings:
+        """Initialize embeddings (lazy initialization)."""
+        if self._embeddings is None:
+            object.__setattr__(self, "_embeddings", OpenAIEmbeddings(model="text-embedding-3-small"))
+        return self._embeddings
+    
+    def _semantic_filter_results(
+        self, 
+        rows: List[tuple], 
+        columns: List[str], 
+        natural_query: str, 
+        top_k: int = 50
+    ) -> List[Dict[str, Any]]:
+        """Use LangChain InMemoryVectorStore to filter large result sets to most relevant items."""
+        try:
+            # Initialize embeddings
+            embeddings = self._init_embeddings()
+            
+            # Convert rows to LangChain Documents with metadata
+            documents = []
+            
+            for idx, row in enumerate(rows):
+                # Create a dict representation of the row
+                row_dict = {columns[i]: row[i] for i in range(len(columns))}
+                
+                # Create searchable text from row
+                text_parts = []
+                for col, val in row_dict.items():
+                    if val is not None:
+                        text_parts.append(f"{col}: {val}")
+                page_content = " | ".join(text_parts)
+                
+                # Create LangChain Document with metadata
+                doc = Document(
+                    page_content=page_content,
+                    metadata=row_dict
+                )
+                documents.append(doc)
+            
+            # Create InMemoryVectorStore with documents
+            vectorstore = InMemoryVectorStore.from_documents(
+                documents=documents,
+                embedding=embeddings
+            )
+            
+            # Perform similarity search with natural language query
+            similar_docs = vectorstore.similarity_search(
+                query=natural_query,
+                k=min(top_k, len(rows))
+            )
+            
+            # Extract metadata (which contains the actual row data)
+            filtered_results = [doc.metadata for doc in similar_docs]
+            
+            return filtered_results
+            
+        except Exception as e:
+            # If vector search fails, fall back to simple truncation
+            print(f"Vector search failed: {e}, falling back to truncation")
+            return [{columns[i]: row[i] for i in range(len(columns))} for row in rows[:top_k]]
+    
+    def _execute_sql(self, conn: sqlite3.Connection, sql: str, natural_query: str = "") -> Dict[str, Any]:
         """Execute SQL query and format results."""
+        # Thresholds
+        DIRECT_LIMIT = 100  # Direct return if <= this
+        VECTOR_SEARCH_LIMIT = 50  # Return top N via vector search if > DIRECT_LIMIT
+        
         try:
             cursor = conn.cursor()
             cursor.execute(sql)
@@ -199,20 +280,39 @@ Now translate this question:
                         "column": columns[0]
                     }
                 
-                # Multiple rows
-                results = []
-                for row in rows:
-                    result_dict = {}
-                    for i, col in enumerate(columns):
-                        result_dict[col] = row[i]
-                    results.append(result_dict)
+                # Multiple rows - check if we need vector search
+                total_rows = len(rows)
                 
-                return {
-                    "sql_executed": sql,
-                    "results": results,
-                    "row_count": len(results),
-                    "columns": columns
-                }
+                if total_rows <= DIRECT_LIMIT:
+                    # Direct return for small result sets
+                    results = []
+                    for row in rows:
+                        result_dict = {}
+                        for i, col in enumerate(columns):
+                            result_dict[col] = row[i]
+                        results.append(result_dict)
+                    
+                    return {
+                        "sql_executed": sql,
+                        "results": results,
+                        "row_count": len(results),
+                        "columns": columns
+                    }
+                else:
+                    # Use vector search for large result sets
+                    filtered_results = self._semantic_filter_results(
+                        rows, columns, natural_query, top_k=VECTOR_SEARCH_LIMIT
+                    )
+                    
+                    return {
+                        "sql_executed": sql,
+                        "results": filtered_results,
+                        "row_count": len(filtered_results),
+                        "columns": columns,
+                        "vector_search_applied": True,
+                        "total_rows_found": total_rows,
+                        "info": f"Vector search applied: showing top {len(filtered_results)} most relevant results out of {total_rows} total rows"
+                    }
             else:
                 # Query executed but no results (INSERT, UPDATE, etc.)
                 return {
@@ -239,8 +339,8 @@ Now translate this question:
             # Translate natural language to SQL
             sql = self._translate_to_sql(natural_query, schema_info)
             
-            # Execute SQL and get results
-            result = self._execute_sql(conn, sql)
+            # Execute SQL and get results (pass natural query for semantic filtering)
+            result = self._execute_sql(conn, sql, natural_query=natural_query)
             
             # Close connection
             conn.close()

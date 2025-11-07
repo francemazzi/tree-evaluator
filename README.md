@@ -303,7 +303,7 @@ The agent uses LangGraph to orchestrate tool calls:
 - Works with/without height data
 - Provides confidence metrics
 
-**DatasetQueryTool**: Direct SQL queries on BAUMKATOGD database
+**DatasetQueryTool**: Direct SQL queries on BAUMKATOGD database with automatic vector search
 
 - Summary statistics (total trees, species count, districts)
 - Filtering (district, species, plant year range)
@@ -311,6 +311,14 @@ The agent uses LangGraph to orchestrate tool calls:
 - Random sampling for data exploration
 - Count queries with filters
 - Natural language to SQL translation with LLM
+- **🔍 Automatic Vector Search**: When query results exceed 100 rows, the tool automatically:
+  - Uses **LangChain's InMemoryVectorStore** (no external database required!)
+  - Creates embeddings for all results using OpenAI `text-embedding-3-small`
+  - Performs semantic similarity search based on the natural language query
+  - Returns top 50 most relevant results
+  - **Zero token overflow errors** - intelligent result filtering prevents rate limit issues
+  - Completely in-memory, fast and lightweight
+  - User sees: "Vector search applied: showing top 50 most relevant results out of N total rows"
 
 **ChartGenerationTool**: Interactive chart generation with Plotly
 
@@ -343,6 +351,71 @@ Run integration tests:
 ```bash
 pytest tests/
 ```
+
+#### Ground truth evaluation commands
+
+L'agente LangGraph può essere validato contro il dataset di ground truth (`dataset/ground_truth.csv`).
+
+**Come funziona:**
+
+Il comando `python tests/ground_truth_runner.py` esegue le seguenti operazioni:
+
+1. **Carica il dataset di ground truth** dal file CSV (`dataset/ground_truth.csv`)
+2. **Per ogni domanda nel dataset:**
+   - Invia la domanda all'agente `TreeEvaluatorAgent` (via `TreeAgentClient`)
+   - Riceve la risposta dell'LLM
+   - Estrae il valore numerico dalla risposta (se presente)
+   - Confronta la risposta numerica con quella attesa (con tolleranza configurabile)
+   - Calcola la similarità testuale tra risposta LLM e risposta attesa (usando SequenceMatcher)
+3. **Genera un report** con:
+   - Accuratezza numerica (% di risposte numeriche corrette)
+   - Similarità testuale media
+   - Lista dei record che hanno fallito con i motivi
+
+**Uso:**
+
+```bash
+# Assicurati di avere OPENAI_API_KEY impostata
+export OPENAI_API_KEY=sk-...
+
+# Esegui tutte le domande del ground truth
+python tests/ground_truth_runner.py
+
+# Limita a 5 domande per test rapidi
+python tests/ground_truth_runner.py --limit 5
+
+# Personalizza tolleranza numerica (default: 1% relativo)
+python tests/ground_truth_runner.py --tolerance 0.05
+
+# Personalizza soglia di similarità testuale (default: 0.65)
+python tests/ground_truth_runner.py --text-threshold 0.70
+
+# Combina più opzioni
+python tests/ground_truth_runner.py --limit 10 --tolerance 0.02 --text-threshold 0.75
+```
+
+**Output esempio:**
+
+```
+=== Ground Truth Accuracy Report ===
+Records evaluated: 10
+Numeric accuracy: 80.0%
+Average text similarity: 72.5%
+
+Failures:
+- ID 3: Numeric mismatch (expected 21363.0, got 21000.0)
+- ID 5: Low text similarity (0.58)
+```
+
+**Test automatizzato Pytest:**
+
+Per integrare la valutazione nei test automatizzati:
+
+```bash
+pytest tests/test_ground_truth_agent.py -v
+```
+
+Il test è marcato come `@pytest.mark.slow` e viene saltato se `OPENAI_API_KEY` non è impostata.
 
 ### Dataset
 

@@ -601,10 +601,27 @@ Per favore, completa la risposta affrontando i task mancanti."""
                                         sql = result_data.get("sql_executed", "")
                                         reasoning += f"**Query SQL generata:**\n```sql\n{sql}\n```\n\n"
                                     
-                                    # Show row count
+                                    # Show row count and vector search info
                                     if "row_count" in result_data:
                                         row_count = result_data.get("row_count", 0)
-                                        reasoning += f"📊 **Righe trovate**: {row_count}\n\n"
+                                        
+                                        # Check if vector search was applied
+                                        if result_data.get("vector_search_applied", False):
+                                            total_found = result_data.get("total_rows_found", row_count)
+                                            reasoning += f"🔍 **Vector Search Applicata**\n"
+                                            reasoning += f"📊 **Righe totali trovate**: {total_found}\n"
+                                            reasoning += f"✨ **Top risultati più rilevanti**: {row_count}\n"
+                                            if "info" in result_data:
+                                                reasoning += f"ℹ️  {result_data['info']}\n"
+                                        else:
+                                            reasoning += f"📊 **Righe trovate**: {row_count}\n"
+                                            
+                                            # Show truncation warning if present (old style)
+                                            if "warning" in result_data:
+                                                warning = result_data.get("warning")
+                                                reasoning += f"⚠️  **Attenzione**: {warning}\n"
+                                        
+                                        reasoning += "\n"
                                     
                                     # Show result preview for dataset queries
                                     if "results" in result_data:

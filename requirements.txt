@@ -21,7 +21,3 @@ langgraph==0.2.28
 openai==1.51.0
 python-dotenv==1.0.1
 
-# Vector database
-chromadb==0.5.5
-sentence-transformers==3.1.1
-
