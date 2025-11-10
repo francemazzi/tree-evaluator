@@ -5,7 +5,13 @@ id;domanda;risposta numerica;risposta estesa;type
 4;Quante specie di alberi ci sono nel distretto 1;230;“Le specie piantate nel distretto 1 sono in totale 230 specie”.;dataset_vienna
 5;Quali sono le 5 specie più presenti nel distretto 1;;“Ecco le 5 specie più presenti nel distretto 1: Celtis australis (Südlicher Zürgelbaum)(965), Acer platanoides (Spitzahorn)(602), Platanus x acerifolia (Ahornblättrige Platane) (245), Acer pseudoplatanus (Bergahorn)(199), Tilia cordata 'Greenspire' (Stadtlinde)(152)”;dataset_vienna
 6;Individua specie piantate che non sono autoctone del posto.;;Le specie non autoctone presenti a Vienna sono: Robinia pseudoacacia, Ailanthus altissima, Acer negundo, Quercus rubra, Aesculus hippocastanum, Prunus cerasifera, Acer saccharinum, Pinus nigra (non autoctono di Vienna ma presente in austria);dataset_vienna.               (potrebbe non darti risposta perché non ha altre info, ma potrebbe anche nominare altre specie ma se ci ritorna almeno queste allora siamo a un buon passo)
-7;Mostra i 10 distretti con la migliore qualità dei dati.;;;
-8;Quale è il distretto con più alberi?;22;“Il distretto con più alberi è il distretto 22 con esattamente 33612 alberi”;
-10;Quale è l’albero più vecchio del dataset?;;“L’albero più vecchio del dataset è stato piantato nel 1658” ;
-11;;;;
+7;Mostra le specie con più valori mancanti nel dataset;;La specie con più dati mancanti sono: Carpinus betulus 'Fastigiata' (Säulenhainbuche) e Prunus serrulata 'Kanzan' (Japanische Blütenkirsche);dataset_vienna
+8;Quale è il distretto con più alberi?;22;“Il distretto con più alberi è il distretto 22 con esattamente 33612 alberi”;dataset_vienna
+10;Quale è l’albero più vecchio del dataset?;;“L’albero più vecchio del dataset è stato piantato nel 1658” ;dataset_vienna
+11;Calcola la CO₂ immagazzinata da un Acer platanoides (Spitzahorn) planted in 1967. Dimmi le formule usate.;13.795,7392;“La CO₂ totale assorbita dall’Acer platanoides è di 13795,7392 kg.”;tool_calcolo_co₂
+12;Calcola la CO₂ assorbita da un Acer platanoides piantato nel 2005.;418,6204764;“Considerando un Acer platanoides piantato nel 2005, la CO₂ immagazzinata è di 418,6204764 kg ”;tool_calcolo_co₂
+13;Quale è la specie di alberi a Vienna che assorbe più co2 in assoluto?;829.769.08652;“La specie che più assorbe co2 a Vienna è il Corylus colurna (Baumhasel) con un totale di 82976908652 kg”;tool_calcolo_co₂
+14;La specie che assorbe di meno? ;0,1608101791;“La specie che assorbe di meno è Acer palmatum 'Atropurpureum' (Roter Fächerahorn) con un totale di 0,1608101791 kg”;tool_calcolo_co₂
+15;Aggrega la CO₂ totale degli alberi pubblici di Vienna e mostra le 5 specie più rilevanti.;129.923.258.057.8;“La CO₂ totale immagazzinata dagli alberi pubblici di Vienna è 129.923.258.057.8 kg. Mentre le 5 specie più rilevanti sono le seguenti: Carpinus betulus 'Fastigiata' (Säulenhainbuche), Prunus cerasifera 'Nigra' (Blutpflaume), Corylus colurna (Baumhasel), Morus alba (Weißer Maulbeerbaum), Fraxinus excelsior (Gemeine Esche)”.;tool_calcolo_co₂
+16;Quale è il distretto che assorbe di più co2?;22;“Il distretto 22 ha la maggior quantità di CO₂ assorbita con un totale di: 307.163.014.650”.;tool_calcolo_co₂
+17;Il distretto con meno CO₂ assorbita?;7;“Il distretto 7 assorbe meno CO₂ di tutti per un totale di: 141.873.9062”.;tool_calcolo_co₂

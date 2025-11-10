@@ -6,8 +6,10 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from pathlib import Path
+from statistics import median
 from typing import Iterable, List, Optional, Sequence
 
 from dotenv import load_dotenv
@@ -172,6 +174,79 @@ class ResponseParser:
         return normalized
 
 
+class NumericAnswerMatcher:
+    """Checks whether an expected numeric answer is textually contained within a response."""
+
+    _SEPARATOR_CLASS = r"[.,\s\u00a0\u202f']"
+
+    def __init__(self, expected_value: float) -> None:
+        self._expected_value = expected_value
+        self._pattern = self._compile_pattern(expected_value)
+
+    def matches(self, text: str) -> bool:
+        if self._pattern is None or not text:
+            return False
+        return bool(self._pattern.search(text))
+
+    @classmethod
+    def _compile_pattern(cls, value: float) -> Optional[re.Pattern]:
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
+        sign = "-" if decimal_value.is_signed() else ""
+        magnitude = decimal_value.copy_abs()
+        digits_tuple = magnitude.as_tuple()
+
+        digits = "".join(str(digit) for digit in digits_tuple.digits) or "0"
+        exponent = digits_tuple.exponent
+
+        if exponent >= 0:
+            digits = digits + ("0" * exponent)
+            integer_digits = digits or "0"
+            fractional_digits = ""
+        else:
+            decimal_places = -exponent
+            if len(digits) <= decimal_places:
+                digits = digits.zfill(decimal_places + 1)
+            integer_digits = digits[:-decimal_places] or "0"
+            fractional_digits = digits[-decimal_places:]
+
+        if fractional_digits and set(fractional_digits) == {"0"}:
+            fractional_digits = ""
+
+        integer_pattern = cls._build_digit_pattern(integer_digits, allow_group_separators=True)
+        pattern_parts: List[str] = []
+
+        if sign:
+            pattern_parts.append(r"[-\u2212]?")
+
+        pattern_parts.append(integer_pattern)
+
+        if fractional_digits:
+            fractional_pattern = cls._build_digit_pattern(fractional_digits, allow_group_separators=False)
+            pattern_parts.append(r"(?:[.,]" + fractional_pattern + r")")
+
+        full_pattern = "".join(pattern_parts)
+        return re.compile(r"(?<!\d)" + full_pattern + r"(?!\d)")
+
+    @classmethod
+    def _build_digit_pattern(cls, digits: str, allow_group_separators: bool) -> str:
+        if not digits:
+            return ""
+        if digits == "0":
+            return "0"
+
+        pattern_parts: List[str] = []
+        for index, digit in enumerate(digits):
+            pattern_parts.append(digit)
+            if allow_group_separators and index != len(digits) - 1:
+                pattern_parts.append(cls._SEPARATOR_CLASS + "?")
+
+        return "".join(pattern_parts)
+
+
 @dataclass
 class EvaluationResult:
     """Maintains evaluation outcomes for a single record."""
@@ -193,12 +268,11 @@ class AccuracyReport:
 
     @property
     def numeric_accuracy(self) -> Optional[float]:
-        numeric_results = [r for r in self._results if r.record.has_numeric_answer() and r.numeric_match is not None]
-        if not numeric_results:
+        counts = self.numeric_counts
+        if counts is None:
             return None
-
-        correct = sum(1 for result in numeric_results if result.numeric_match)
-        return correct / len(numeric_results)
+        total, correct = counts
+        return correct / total if total else None
 
     @property
     def average_text_similarity(self) -> Optional[float]:
@@ -206,6 +280,69 @@ class AccuracyReport:
         if not similarities:
             return None
         return sum(similarities) / len(similarities)
+
+    @property
+    def median_text_similarity(self) -> Optional[float]:
+        similarities = [r.text_similarity for r in self._results if r.text_similarity is not None]
+        if not similarities:
+            return None
+        return median(similarities)
+
+    @property
+    def numeric_counts(self) -> Optional[tuple[int, int]]:
+        numeric_results = [
+            r
+            for r in self._results
+            if r.record.has_numeric_answer() and r.numeric_match is not None
+        ]
+        if not numeric_results:
+            return None
+        correct = sum(1 for result in numeric_results if result.numeric_match)
+        return len(numeric_results), correct
+
+    @property
+    def text_counts(self) -> Optional[tuple[int, int]]:
+        text_results = [
+            r
+            for r in self._results
+            if r.record.has_text_answer() and r.text_similarity is not None
+        ]
+        if not text_results:
+            return None
+        passes = sum(1 for result in text_results if result.text_similarity >= self._text_threshold)
+        return len(text_results), passes
+
+    @property
+    def full_pass_counts(self) -> Optional[tuple[int, int]]:
+        if not self._results:
+            return None
+        passed = 0
+        for result in self._results:
+            if result.error:
+                continue
+
+            numeric_ok = True
+            if result.record.has_numeric_answer():
+                numeric_ok = result.numeric_match is True
+
+            text_ok = True
+            if result.record.has_text_answer() and result.text_similarity is not None:
+                text_ok = result.text_similarity >= self._text_threshold
+
+            if result.record.has_text_answer() and result.text_similarity is None:
+                text_ok = False
+
+            if numeric_ok and text_ok:
+                passed += 1
+        return passed, len(self._results)
+
+    @property
+    def full_pass_rate(self) -> Optional[float]:
+        counts = self.full_pass_counts
+        if counts is None:
+            return None
+        passed, total = counts
+        return passed / total if total else None
 
     @property
     def total_records(self) -> int:
@@ -233,17 +370,41 @@ class AccuracyReport:
         lines.append("=== Ground Truth Accuracy Report ===")
         lines.append(f"Records evaluated: {self.total_records}")
 
+        numeric_counts = self.numeric_counts
         numeric_accuracy = self.numeric_accuracy
-        if numeric_accuracy is not None:
-            lines.append(f"Numeric accuracy: {numeric_accuracy * 100:.1f}%")
+        if numeric_counts and numeric_accuracy is not None:
+            total_numeric, correct_numeric = numeric_counts
+            lines.append(
+                f"Numeric accuracy: {correct_numeric}/{total_numeric} ({numeric_accuracy * 100:.1f}%)"
+            )
         else:
             lines.append("Numeric accuracy: not available")
+
+        text_counts = self.text_counts
+        if text_counts:
+            total_text, text_passes = text_counts
+            text_pass_rate = text_passes / total_text if total_text else 0.0
+            lines.append(
+                f"Text pass rate (≥{self._text_threshold * 100:.0f}%): {text_passes}/{total_text} ({text_pass_rate * 100:.1f}%)"
+            )
+        else:
+            lines.append("Text pass rate: not available")
 
         text_similarity = self.average_text_similarity
         if text_similarity is not None:
             lines.append(f"Average text similarity: {text_similarity * 100:.1f}%")
         else:
             lines.append("Average text similarity: not available")
+
+        median_similarity = self.median_text_similarity
+        if median_similarity is not None:
+            lines.append(f"Median text similarity: {median_similarity * 100:.1f}%")
+
+        full_pass_counts = self.full_pass_counts
+        full_pass_rate = self.full_pass_rate
+        if full_pass_counts and full_pass_rate is not None:
+            passed, total = full_pass_counts
+            lines.append(f"Full pass rate: {passed}/{total} ({full_pass_rate * 100:.1f}%)")
 
         failures = self.failing_records()
         if failures:
@@ -400,12 +561,11 @@ class GroundTruthTestRunner:
         numeric_error: Optional[float] = None
 
         if record.has_numeric_answer():
+            matcher = NumericAnswerMatcher(float(record.numeric_answer))
+            numeric_match = matcher.matches(response.raw_text)
             if response.extracted_number is not None:
                 numeric_error = abs(response.extracted_number - float(record.numeric_answer))
-                allowed_error = max(self._numeric_tolerance * float(record.numeric_answer), 1.0)
-                numeric_match = numeric_error <= allowed_error
             else:
-                numeric_match = False
                 numeric_error = None
 
         text_similarity: Optional[float] = None
