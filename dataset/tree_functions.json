@@ -1,0 +1,233 @@
+[
+  {
+    "titolo": "Volume del fusto – Formula di Heyer",
+    "funzione": "V = S1 + S2 + S3 + … + Sn-1 + Sn",
+    "descrizione": "Somma delle superfici delle sezioni trasversali del tronco lungo la sua altezza. È un metodo pratico per stimare il volume attraverso sezioni multiple (analogo al metodo delle sezioni sovrapposte).",
+    "variabili": [
+      {
+        "nome": "S1...Sn",
+        "descrizione": "Superfici delle sezioni trasversali del tronco misurate a diverse altezze. Più sezioni = maggiore precisione."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Equazione generale del volume",
+    "funzione": "V = a (D² H)",
+    "descrizione": "Modello allometrico classico per stimare il volume del fusto a partire dal diametro a petto d’uomo e dall’altezza.",
+    "variabili": [
+      {
+        "nome": "a",
+        "descrizione": "Coefficiente empirico ricavato da regressione. Dipende dalla specie e dalle condizioni di crescita."
+      },
+      {
+        "nome": "D",
+        "descrizione": "Diametro del tronco a 1.3 m (DBH, diameter at breast height). Più influisce sul volume perché entra al quadrato."
+      },
+      {
+        "nome": "H",
+        "descrizione": "Altezza dell’albero. Contribuisce linearmente al volume."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Equazione alternativa semplificata per il volume",
+    "funzione": "V = 0.77 (D²)",
+    "descrizione": "Stima molto semplificata del volume, utilizzabile quando l’altezza non è nota. Adatta solo a popolazioni omogenee.",
+    "variabili": [
+      {
+        "nome": "D",
+        "descrizione": "Diametro DBH dell’albero. Essendo l’unica variabile, l’equazione assume un rapporto medio costante tra altezza e diametro."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Relazione allometrica generale",
+    "funzione": "Y = a X^b",
+    "descrizione": "Equazione allometrica fondamentale che lega una variabile di interesse (biomassa, volume, superficie fogliare) a una variabile predittiva (diametro, altezza, area basimetrica).",
+    "variabili": [
+      {
+        "nome": "Y",
+        "descrizione": "Variabile dipendente, tipicamente biomassa o volume."
+      },
+      {
+        "nome": "X",
+        "descrizione": "Variabile indipendente, come D, H o combinazione D²H."
+      },
+      {
+        "nome": "a",
+        "descrizione": "Intercetta della regressione in forma potenziata."
+      },
+      {
+        "nome": "b",
+        "descrizione": "Coefficiente esponente che descrive la scala allometrica."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Forma logaritmica della relazione allometrica",
+    "funzione": "ln Y = ln a + b ln X",
+    "descrizione": "Forma linearizzata dell’equazione allometrica, usata per effettuare regressioni lineari su dati trasformati in logaritmo.",
+    "variabili": [
+      {
+        "nome": "ln Y",
+        "descrizione": "Logaritmo naturale della biomassa o volume."
+      },
+      {
+        "nome": "ln X",
+        "descrizione": "Logaritmo naturale della variabile predittiva."
+      },
+      {
+        "nome": "a, b",
+        "descrizione": "Parametri stimati tramite regressione lineare su dati log-log."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Errore relativo del modello",
+    "funzione": "RD = |y - ŷ| / y",
+    "descrizione": "Misura l’accuratezza della previsione rispetto al valore reale. Indica quanto la stima ŷ si discosta percentualmente dal valore osservato y.",
+    "variabili": [
+      {
+        "nome": "y",
+        "descrizione": "Valore reale osservato (volume, biomassa)."
+      },
+      {
+        "nome": "ŷ",
+        "descrizione": "Valore stimato dal modello."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Equazione logaritmica per fuel load e biomassa",
+    "funzione": "Y = CF * exp(a + b * Log(X))",
+    "descrizione": "Back-transform dell’equazione logaritmica, con applicazione del Correction Factor (CF) per eliminare il bias introdotto dalla trasformazione logaritmica.",
+    "variabili": [
+      {
+        "nome": "CF",
+        "descrizione": "Correction Factor, generalmente derivato dallo smearing estimator (Duan 1983)."
+      },
+      {
+        "nome": "a",
+        "descrizione": "Intercetta della regressione logaritmica."
+      },
+      {
+        "nome": "b",
+        "descrizione": "Coefficiente della regressione logaritmica."
+      },
+      {
+        "nome": "X",
+        "descrizione": "Variabile predittiva, es. D, H, D²H, area basimetrica."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Leaf Biomass Equation",
+    "funzione": "Leaf = e^(-7.21) × (D² × H)^0.6 × age^3.2 × 1.28",
+    "descrizione": "Modello specifico per stimare la biomassa fogliare. Le potenze descrivono l’effetto non lineare di dimensioni e età sulla produzione di foglie.",
+    "variabili": [
+      {
+        "nome": "D",
+        "descrizione": "Diametro DBH; contribuisce alla dimensione totale della chioma."
+      },
+      {
+        "nome": "H",
+        "descrizione": "Altezza dell’albero; influenza la struttura della chioma."
+      },
+      {
+        "nome": "age",
+        "descrizione": "Età dell’albero. Biomassa fogliare cresce fortemente con l’età nelle prime fasi (esponente 3.2)."
+      },
+      {
+        "nome": "1.28",
+        "descrizione": "Fattore correttivo empirico derivato da regressione."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Stem Biomass Equation",
+    "funzione": "Stem = e^(-8.15 + 2.20D + 1.24 age - 0.35 D × age) × 1.41",
+    "descrizione": "Equazione per stimare la biomassa del fusto, includendo un termine di interazione (D × age) che cattura la relazione non lineare tra crescita in diametro e età.",
+    "variabili": [
+      {
+        "nome": "D",
+        "descrizione": "Diametro del fusto. Ha impatto esponenziale sulla biomassa."
+      },
+      {
+        "nome": "age",
+        "descrizione": "Età dell’albero; influenza la densità e lo sviluppo del legno."
+      },
+      {
+        "nome": "D × age",
+        "descrizione": "Termine di interazione che corregge la crescita combinata diametro-età."
+      },
+      {
+        "nome": "1.41",
+        "descrizione": "Fattore di scaling empirico."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Root Biomass Equation",
+    "funzione": "Root = e^(-5) × D^1.48 × H^0.4 × age^1.38 × (Root_to_shoot_ratio)^0.31 × 1.26",
+    "descrizione": "Calcola la biomassa radicale integrando dimensioni dell’albero, età e rapporto root-to-shoot. Equazione molto utile per valutazioni ecologiche e carbon stock.",
+    "variabili": [
+      {
+        "nome": "D",
+        "descrizione": "Diametro DBH; influisce fortemente sul sistema radicale."
+      },
+      {
+        "nome": "H",
+        "descrizione": "Altezza; contribuisce alla stabilità e proporzione radici/chioma."
+      },
+      {
+        "nome": "age",
+        "descrizione": "Età; sviluppo radicale aumenta con l'età."
+      },
+      {
+        "nome": "Root_to_shoot_ratio",
+        "descrizione": "Rapporto biomassa radici / biomassa aerea. Dipende da specie e stress ambientali."
+      },
+      {
+        "nome": "1.26",
+        "descrizione": "Fattore empirico correttivo."
+      }
+    ]
+  },
+
+  {
+    "titolo": "Total Biomass Equation",
+    "funzione": "Total = e^(-4.2) × D^1.36 × H^0.57 × age^1.67 × (Root_to_shoot_ratio)^(-0.3) × 1.23",
+    "descrizione": "Stima la biomassa totale dell’albero combinando la componente aerea e radicale attraverso parametri allometrici complessi.",
+    "variabili": [
+      {
+        "nome": "D",
+        "descrizione": "Diametro, variabile principale associata alla biomassa totale."
+      },
+      {
+        "nome": "H",
+        "descrizione": "Altezza, importante per distinguere alberi snelli vs robusti."
+      },
+      {
+        "nome": "age",
+        "descrizione": "Età, rappresenta la struttura di crescita complessiva."
+      },
+      {
+        "nome": "Root_to_shoot_ratio",
+        "descrizione": "Contribuisce in negativo (esponente -0.3), perché la biomassa totale tende a essere più prevedibile quando la pianta ha minore variabilità nel rapporto radici/chioma."
+      },
+      {
+        "nome": "1.23",
+        "descrizione": "Fattore correttivo empirico."
+      }
+    ]
+  }
+]

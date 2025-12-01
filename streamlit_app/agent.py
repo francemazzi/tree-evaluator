@@ -17,6 +17,17 @@ from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
+from streamlit_app.tools.heyer_volume_tool import HeyerVolumeTool
+from streamlit_app.tools.general_volume_tool import GeneralVolumeTool
+from streamlit_app.tools.simplified_volume_tool import SimplifiedVolumeTool
+from streamlit_app.tools.allometric_relation_tool import AllometricRelationTool
+from streamlit_app.tools.log_allometric_tool import LogAllometricTool
+from streamlit_app.tools.model_error_tool import ModelErrorTool
+from streamlit_app.tools.log_fuel_biomass_tool import LogFuelBiomassTool
+from streamlit_app.tools.leaf_biomass_tool import LeafBiomassTool
+from streamlit_app.tools.stem_biomass_tool import StemBiomassTool
+from streamlit_app.tools.root_biomass_tool import RootBiomassTool
+from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
 
 # Load environment variables
 load_dotenv()
@@ -63,6 +74,17 @@ class TreeEvaluatorAgent:
             EnvironmentEstimationTool(),
             DatasetQueryTool(llm=self._base_llm),
             ChartGenerationTool(llm=self._base_llm),
+            HeyerVolumeTool(),
+            GeneralVolumeTool(),
+            SimplifiedVolumeTool(),
+            AllometricRelationTool(),
+            LogAllometricTool(),
+            ModelErrorTool(),
+            LogFuelBiomassTool(),
+            LeafBiomassTool(),
+            StemBiomassTool(),
+            RootBiomassTool(),
+            TotalBiomassTool(),
         ]
 
         # Initialize LLM with tools bound
@@ -422,11 +444,13 @@ Task da completare:
 2. **Environmental Estimation Tool**: Compute volume, biomass, and carbon stock using alternative formulas.
 3. **Dataset Query Tool**: Query a real Vienna trees dataset (BAUMKATOGD) with filtering, aggregation, and statistics.
 4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
+5. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
+- Use specific biomass/volume tools when the user asks for those specific equations (Heyer, Leaf Biomass, etc.).
 - Always provide clear, helpful responses in Italian.
 - If you need more information, ask the user.
 - When using tools, explain the results in a user-friendly way.
