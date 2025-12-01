@@ -1,0 +1,51 @@
+Species,Mean,Range,Number of Values
+Alder,50.2,49.8-51.4,3
+Ash,49.8,48.1-51.3,4
+Aspen,48.4,46.4-49.9,6
+Balsa,48.6,47.1-49.8,3
+Basswood,49.3,48.3-50.6,3
+Beech,49.3,47.8-50.3,7
+Birch,49.4,46.4-54.2,16
+Blue Gum,49.3,,1
+Catalpa,49.0,,1
+"Cherry, fire",47.7,,1
+Elm,49.1,48.6-49.3,3
+Hickory,48.1,46.1-49.2,3
+Maple,49.5,48.0-51.5,8
+Mesquite,50.1,49.7-50.5,2
+Oak,49.4,46.3-51.4,7
+Poplar,50.0,49.6-50.3,2
+River red gum,50.7,,1
+Sweetgum,43.2,,1
+Tupelo,50.4,50.1-50.7,2
+Wattle,48.8,,1
+Willow,50.9,,1
+Yemene,49.8,,1
+Eucalyptus,48.7,47.6-49.7,2
+Cedar,51.1,49.6-52.1,10
+Cypress,51.2,,1
+Fir,50.2,47.2-51.8,12
+Hemlock,49.8,47.6-51-0,7
+Juniper,51.1,,1
+Larch,50.5,50.3-50.9,3
+Pine,49.9,47.5-52.5,27
+Redwood,49.9,48.2-51.6,2
+Spruce,49.8,47.2-52.7,14
+Tamarack,49.8,49.5-50.0,4
+Angelique,50.6,50.4-50.7,2
+Greenheart,51.2,51.1-51.2,2
+Kakeralli,50.9,50.5-51.3,2
+Mahogany,48.1,47.7-48.4,2
+Tanary,51.3,51.0-51.5,2
+Teak,49.4,49.1-49.7,2
+Abiurana,50.1,,1
+Breu branco,50.3,,1
+Cordia alliodora,50.7,50.6-50.7,2
+Hymenaea coubaril,48.5,48.5,2
+Imbauba,49.5,,1
+Licaria cayennensis,50.5,50.0-50.9,2
+Manilkara bibentata,50.2,49.6-50.6,4
+Ocotea rubra,50.7,50.7,2
+Pau mulato,50.7,,1
+Pseudosamanea guachapele,49.4,49.3-49.5,2
+Tabebuia guayacan,50.7,50.6-50.8,2

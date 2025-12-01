@@ -9,6 +9,10 @@ class CO2CalculationRequest(BaseModel):
     wood_density_g_cm3: float = Field(gt=0, description="Wood density in g/cm^3")
     carbon_fraction: float = Field(default=0.47, gt=0, lt=1, description="Carbon fraction of dry biomass")
     root_shoot_ratio: float = Field(default=0.24, gt=0, description="Root to shoot biomass ratio")
+    species: Optional[str] = Field(
+        default=None,
+        description="Tree species name. If provided, carbon_fraction will be looked up from dataset (overrides carbon_fraction parameter)",
+    )
 
     # Optional input to estimate annual CO2 absorption (flow)
     annual_biomass_increment_t: Optional[float] = Field(

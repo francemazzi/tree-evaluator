@@ -27,11 +27,15 @@ class CO2CalculationInput(BaseModel):
     )
     carbon_fraction: float = Field(
         default=0.47,
-        description="Carbon fraction of dry biomass (default 0.47)",
+        description="Carbon fraction of dry biomass (default 0.47). Ignored if species is provided.",
     )
     root_shoot_ratio: float = Field(
         default=0.24,
         description="Root to shoot biomass ratio (default 0.24)",
+    )
+    species: Optional[str] = Field(
+        default=None,
+        description="Tree species name (e.g., 'Oak', 'Maple', 'Pine'). If provided, carbon_fraction will be automatically looked up from dataset.",
     )
     annual_biomass_increment_t: Optional[float] = Field(
         default=None,
@@ -50,8 +54,9 @@ class CO2CalculationTool(BaseTool):
     - dbh_cm: diameter at breast height in centimeters
     - height_m: tree height in meters
     - wood_density_g_cm3: wood density (default 0.6 for generic, use species-specific if known)
-    - carbon_fraction: carbon fraction (default 0.47)
+    - carbon_fraction: carbon fraction (default 0.47, ignored if species is provided)
     - root_shoot_ratio: root-to-shoot ratio (default 0.24)
+    - species: tree species name (optional, e.g., 'Oak', 'Maple', 'Pine'). If provided, carbon_fraction will be automatically looked up from dataset
     - annual_biomass_increment_t: optional annual biomass increment in tonnes/year
     
     Returns JSON with:
@@ -63,6 +68,7 @@ class CO2CalculationTool(BaseTool):
     - co2_annual_t: annual CO2 uptake in tonnes/year (if increment provided)
     
     Use this when user asks about CO2, carbon sequestration, biomass for specific tree measurements.
+    If the user specifies a tree species, use the species parameter to get species-specific carbon content.
     """
     args_schema: Type[BaseModel] = CO2CalculationInput
 
@@ -79,6 +85,7 @@ class CO2CalculationTool(BaseTool):
         wood_density_g_cm3: float = 0.6,
         carbon_fraction: float = 0.47,
         root_shoot_ratio: float = 0.24,
+        species: Optional[str] = None,
         annual_biomass_increment_t: Optional[float] = None,
     ) -> dict:
         """Execute the CO2 calculation."""
@@ -88,6 +95,7 @@ class CO2CalculationTool(BaseTool):
             wood_density_g_cm3=wood_density_g_cm3,
             carbon_fraction=carbon_fraction,
             root_shoot_ratio=root_shoot_ratio,
+            species=species,
             annual_biomass_increment_t=annual_biomass_increment_t,
         )
         response = self._service.calculate(request)
