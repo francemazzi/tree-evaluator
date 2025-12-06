@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Annotated, List, Literal, Optional, Sequence, TypedDict
+from pathlib import Path
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -48,11 +49,60 @@ class AgentState(TypedDict):
 class TreeEvaluatorAgent:
     """LangGraph-based agent that orchestrates tree evaluation tools."""
 
-    def __init__(self, openai_api_key: Optional[str] = None) -> None:
+    # Dataset presets configuration
+    DATASET_PRESETS = {
+        "vienna": {
+            "db_path": "dataset/BAUMKATOGD.db",
+            "table_name": "baumkatogd",
+            "description": """Dataset degli alberi di Vienna (BAUMKATOGD) con 229.298 alberi.
+Colonne principali:
+- objectid: ID univoco albero
+- district: Numero distretto (1-23)
+- genus_species: Nome specie (es. "Acer platanoides")
+- plant_year: Anno di piantumazione
+- trunk_circumference: Circonferenza tronco in cm
+- tree_height: Categoria altezza (codificata)
+- crown_diameter: Categoria diametro chioma (codificata)
+- object_street: Nome via
+Calcoli derivati: DBH = trunk_circumference / π, Età = anno_corrente - plant_year"""
+        },
+        "milano": {
+            "db_path": "dataset/dataset_milano.db",
+            "table_name": "milano_trees",
+            "description": """Dataset degli alberi di Milano con 251.165 alberi.
+Colonne principali:
+- _id: ID univoco albero
+- district: Numero municipio (1-9)
+- genere: Genere botanico (es. "Prunus", "Acer")
+- specie: Specie botanica (es. "cerasifera", "platanoides")
+- varieta: Varietà (es. "Pissardii")
+- genus_species: Nome completo specie (genere + specie)
+- trunk_diameter_cm: Diametro tronco in cm (NON circonferenza!)
+- crown_diameter_m: Diametro chioma in metri
+- height_m: Altezza in metri
+- street: Nome via/località
+- plant_year: Anno di piantumazione
+- longitude, latitude: Coordinate GPS
+Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza di Vienna)"""
+        }
+    }
+    
+    def __init__(
+        self, 
+        openai_api_key: Optional[str] = None,
+        custom_db_path: Optional[Path] = None,
+        custom_table_name: Optional[str] = None,
+        data_description: str = "",
+        dataset_preset: str = "vienna"
+    ) -> None:
         """Initialize the agent with tools and LLM.
 
         Args:
             openai_api_key: OpenAI API key. If not provided, tries OPENAI_API_KEY env var.
+            custom_db_path: Optional path to custom SQLite database
+            custom_table_name: Optional custom table name in the database
+            data_description: Optional description of the data for context
+            dataset_preset: Preset dataset to use ("vienna", "milano")
         """
         # Get API key - prioritize parameter, then env var
         api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -68,11 +118,34 @@ class TreeEvaluatorAgent:
             api_key=api_key,
         )
 
+        # Initialize DatasetQueryTool with appropriate database
+        if custom_db_path and custom_table_name:
+            # Custom uploaded CSV
+            dataset_tool = DatasetQueryTool(
+                db_path=custom_db_path,
+                table_name=custom_table_name,
+                user_description=data_description,
+                llm=self._base_llm
+            )
+        elif dataset_preset in self.DATASET_PRESETS:
+            # Preset dataset (Vienna or Milano)
+            preset = self.DATASET_PRESETS[dataset_preset]
+            db_path = Path(__file__).parent.parent / preset["db_path"]
+            dataset_tool = DatasetQueryTool(
+                db_path=db_path,
+                table_name=preset["table_name"],
+                user_description=preset["description"],
+                llm=self._base_llm
+            )
+        else:
+            # Default: Vienna
+            dataset_tool = DatasetQueryTool(llm=self._base_llm)
+        
         # Initialize tools with LLM
         self._tools = [
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
-            DatasetQueryTool(llm=self._base_llm),
+            dataset_tool,
             ChartGenerationTool(llm=self._base_llm),
             HeyerVolumeTool(),
             GeneralVolumeTool(),
@@ -343,13 +416,15 @@ class TreeEvaluatorAgent:
         # Use LLM to optimize query and create tasks
         optimizer_prompt = f"""Analizza la seguente domanda dell'utente e:
 1. Riformulala in modo più chiaro e specifico
-2. Scomponila in task specifici e ordinati
+2. Scomponila in task GRANULARI e specifici (minimo 3-5 task, anche 6-8 se la domanda è complessa)
+
+IMPORTANTE: Crea sempre MULTIPLI sottotask dettagliati, non un singolo task generico.
 
 Domanda originale: {last_user_msg}
 
 Rispondi in formato JSON con:
 - "optimized_query": la domanda ottimizzata
-- "tasks": lista di task specifici da completare (minimo 2-3 task)
+- "tasks": lista di sottotask specifici e granulari (MINIMO 3-5 task, anche di più se necessario)
 
 Esempi:
 
@@ -357,10 +432,12 @@ Esempio 1 - Calcolo CO2:
 {{
     "optimized_query": "Calcola il sequestro di CO2 per un albero di Acer di 30cm DBH e 15m altezza",
     "tasks": [
-        "Identificare la specie (Acer) e la densità del legno appropriata (0.56 g/cm³)",
-        "Calcolare il volume utilizzando DBH (30cm) e altezza (15m)",
-        "Calcolare la biomassa e il sequestro di CO2",
-        "Presentare i risultati in modo chiaro"
+        "1. Identificare la specie (Acer) nel database delle densità",
+        "2. Recuperare la densità del legno appropriata per Acer (0.56 g/cm³)",
+        "3. Calcolare il volume dell'albero usando DBH (30cm) e altezza (15m)",
+        "4. Calcolare la biomassa totale (volume × densità)",
+        "5. Stimare il sequestro di CO2 dalla biomassa",
+        "6. Presentare i risultati con unità di misura (kg CO2, kg biomassa, m³ volume)"
     ]
 }}
 
@@ -368,23 +445,43 @@ Esempio 2 - Grafico:
 {{
     "optimized_query": "Crea un grafico a torta che mostri la distribuzione dei diametri degli alberi a Vienna",
     "tasks": [
-        "Interrogare il dataset per ottenere i dati sui diametri degli alberi a Vienna",
-        "Raggruppare i dati in categorie di diametro appropriate",
-        "Generare un grafico a torta con i dati raggruppati",
-        "Presentare il grafico con etichette chiare"
+        "1. Interrogare il dataset Vienna Trees per ottenere tutti i diametri (DBH)",
+        "2. Analizzare la distribuzione dei valori per definire categorie appropriate",
+        "3. Raggruppare i dati in categorie di diametro (es. 0-20cm, 20-40cm, 40-60cm, >60cm)",
+        "4. Contare il numero di alberi per ogni categoria",
+        "5. Generare un grafico a torta usando il chart tool",
+        "6. Verificare che le etichette mostrino percentuali e conteggi"
     ]
 }}
 
-Esempio 3 - Query Dataset:
+Esempio 3 - Query Dataset Complessa:
 {{
     "optimized_query": "Trova le 10 specie più comuni a Vienna e conta quanti alberi ci sono per ciascuna",
     "tasks": [
-        "Interrogare il dataset per estrarre tutte le specie presenti",
-        "Raggruppare per specie e contare il numero di alberi",
-        "Ordinare per numero di alberi in ordine decrescente",
-        "Selezionare le prime 10 specie e presentare i risultati"
+        "1. Interrogare il dataset per verificare la struttura della tabella",
+        "2. Estrarre tutte le specie presenti nel dataset",
+        "3. Raggruppare i dati per specie",
+        "4. Contare il numero di alberi per ogni specie",
+        "5. Ordinare per numero di alberi in ordine decrescente",
+        "6. Selezionare le prime 10 specie",
+        "7. Formattare i risultati con nome specie e conteggio"
     ]
-}}"""
+}}
+
+Esempio 4 - Rapporto Ipogeo/Epigeo:
+{{
+    "optimized_query": "Calcola il rapporto ipogeo/epigeo delle conifere nel dataset",
+    "tasks": [
+        "1. Interrogare il dataset per identificare tutte le conifere presenti",
+        "2. Cercare nel dataset dei rapporti R/S specifici per conifere",
+        "3. Se disponibili, estrarre i valori medi di R/S per genere/specie",
+        "4. Se non disponibili, usare il valore standard R/S = 0.24 per conifere temperate",
+        "5. Calcolare la media ponderata se ci sono più specie",
+        "6. Presentare il risultato con unità di misura e riferimenti ai tool usati"
+    ]
+}}
+
+REGOLA CRITICA: Scomponi SEMPRE la domanda in 3-8 sottotask specifici. NON creare un singolo task generico."""
         
         try:
             # Create a temporary LLM without tools for optimization
@@ -456,19 +553,50 @@ Guidelines:
 - When using tools, explain the results in a user-friendly way.
 - For wood density, use species-specific values if known, otherwise default to 0.6 g/cm³.
 
+**CRITICAL RULES - ALWAYS FOLLOW:**
+
+1. **ALWAYS include units of measurement** in your answers:
+   - Volumes: m³ (metri cubi)
+   - Biomass: kg, t (tonnellate)
+   - CO2: kg CO2, t CO2
+   - Diameters: cm (centimetri)
+   - Heights: m (metri)
+   - Ratios: no unit (R/S = 0.24 significa rapporto adimensionale)
+   - Counts: numero alberi, specie, record
+   
+2. **ALWAYS cite which tool(s) you used** at the end of your response:
+   - Format: "Tool utilizzati: [nome tool]"
+   - Examples:
+     * "Tool utilizzati: Dataset Query Tool"
+     * "Tool utilizzati: CO2 Calculation Tool"
+     * "Tool utilizzati: Dataset Query Tool, Chart Generation Tool"
+     * "Tool utilizzati: Allometric Relation Tool"
+
+3. **Complete answer format**:
+   ```
+   [Prima riga: risposta diretta con numero e unità di misura]
+   
+   [Dettagli aggiuntivi se necessari]
+   
+   Tool utilizzati: [nome tool(s)]
+   ```
+
 Answer style policy (CRITICAL for evaluation):
-- First line must contain the final answer in Italian 8if the user question is in Italian) with the exact number (as digits) and minimal text, before any explanation.
-- Prefer Italian numeric formatting when appropriate: thousands with dot, decimals with comma (e.g., 33.612; 0,1608101791). If exact digits are known, preserve them.
+- First line must contain the final answer in Italian with the exact number, units of measurement, and minimal text.
+- ALWAYS include units: kg, m³, cm, m, t CO2, etc.
+- Prefer Italian numeric formatting: thousands with dot, decimals with comma (e.g., 33.612 alberi; 0,24 R/S; 15.000 kg CO2).
 - Keep additional details only after a blank line, and keep them concise.
 - Mirror user phrasing when possible to maximize textual similarity.
-- For common question types, use these templates for the first line:
-  - Count of districts in Vienna: "A Vienna ci sono {NUM} distretti"
-  - Total trees in Vienna: "Gli alberi totali a Vienna sono {NUM}"
-  - Trees in district D: "Nel distretto {D} sono presenti esattamente {NUM} alberi"
-  - Species count in district D: "Le specie piantate nel distretto {D} sono in totale {NUM} specie"
-  - District with most trees: "Il distretto con più alberi è il distretto {D} con esattamente {NUM} alberi"
-  - Oldest planting year: "L’albero più vecchio del dataset è stato piantato nel {YEAR}"
-  - CO2 direct totals (if computed): "La CO₂ totale è {NUM} kg"
+- ALWAYS end with "Tool utilizzati: [nome tool]"
+
+Examples with units and tool citation:
+  - "A Vienna ci sono 23 distretti\n\nTool utilizzati: Dataset Query Tool"
+  - "Gli alberi totali a Vienna sono 229.298 alberi\n\nTool utilizzati: Dataset Query Tool"
+  - "Nel distretto 19 sono presenti esattamente 15.842 alberi\n\nTool utilizzati: Dataset Query Tool"
+  - "Il rapporto R/S per le conifere temperate è 0,24\n\nStima basata su letteratura scientifica per conifere.\n\nTool utilizzati: Allometric Relation Tool"
+  - "La CO₂ sequestrata è 1.250 kg CO2\n\nCalcolo basato su DBH 30cm, altezza 15m, densità legno 0.56 g/cm³.\n\nTool utilizzati: CO2 Calculation Tool"
+  - "Il volume stimato è 2,5 m³\n\nCalcolo con formula di Heyer per DBH 30cm e altezza 15m.\n\nTool utilizzati: Heyer Volume Tool"
+
 If a computation is needed but measurements are missing, state the short requirement in one line, then ask for the needed values in the next lines.
 
 **IMPORTANT - Chart Tool Usage:**
@@ -556,16 +684,22 @@ Task da completare:
 
 Risposta fornita: {agent_response}
 
-Analizza se:
-1. Tutti i task sono stati completati
-2. La risposta è accurata e completa
-3. La risposta risponde effettivamente alla domanda
+Analizza TUTTI questi criteri:
+1. Tutti i task sono stati completati?
+2. La risposta è accurata e completa?
+3. La risposta risponde effettivamente alla domanda?
+4. CRITICO: Se la risposta contiene numeri/misure, include le UNITÀ DI MISURA? (kg, m³, cm, kg CO2, etc.)
+5. CRITICO: La risposta cita i TOOL UTILIZZATI alla fine? (formato: "Tool utilizzati: [nome tool]")
+
+IMPORTANTE: Se mancano unità di misura o citazione dei tool, la risposta è INCOMPLETA.
 
 Rispondi in formato JSON:
 {{
     "is_complete": true/false,
     "completed_tasks": ["lista", "dei", "task", "completati"],
     "missing_tasks": ["lista", "dei", "task", "mancanti"],
+    "has_units": true/false (se sono presenti unità di misura dove necessario),
+    "has_tool_citation": true/false (se è presente "Tool utilizzati:"),
     "feedback": "breve feedback su cosa manca o cosa migliorare (se incompleto)"
 }}"""
         
@@ -590,15 +724,39 @@ Rispondi in formato JSON:
             
             validation_result = json.loads(response_text)
             
+            # Check if response is truly complete (including units and tool citation)
+            is_complete = validation_result.get("is_complete", True)
+            has_units = validation_result.get("has_units", True)
+            has_tool_citation = validation_result.get("has_tool_citation", True)
+            
+            # Override is_complete if units or tool citation are missing
+            if not has_units or not has_tool_citation:
+                is_complete = False
+                missing_items = []
+                if not has_units:
+                    missing_items.append("unità di misura")
+                if not has_tool_citation:
+                    missing_items.append("citazione dei tool utilizzati")
+                
+                # Add to feedback
+                current_feedback = validation_result.get('feedback', '')
+                additional_feedback = f"Mancano: {', '.join(missing_items)}."
+                validation_result['feedback'] = f"{current_feedback} {additional_feedback}".strip()
+                validation_result['is_complete'] = False
+            
             # If incomplete, add feedback as system message for retry
-            if not validation_result.get("is_complete", True):
+            if not is_complete:
                 feedback_msg = SystemMessage(
                     content=f"""⚠️ Validazione risposta:
 Task mancanti: {', '.join(validation_result.get('missing_tasks', []))}
 
 Feedback: {validation_result.get('feedback', '')}
 
-Per favore, completa la risposta affrontando i task mancanti."""
+REGOLE OBBLIGATORIE:
+- SEMPRE includere unità di misura (kg, m³, cm, kg CO2, etc.)
+- SEMPRE terminare con "Tool utilizzati: [nome tool]"
+
+Per favore, completa la risposta affrontando i task mancanti e rispettando le regole obbligatorie."""
                 )
                 return {
                     "messages": [feedback_msg],

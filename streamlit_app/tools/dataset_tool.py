@@ -74,16 +74,36 @@ class DatasetQueryTool(BaseTool):
     _db_path: Path
     _llm: Any = None
     _embeddings: Optional[OpenAIEmbeddings] = None
+    _table_name: str = "baumkatogd"
+    _user_description: str = ""
 
-    def __init__(self, db_path: Optional[Path] = None, llm: Any = None, **kwargs):
+    def __init__(
+        self, 
+        db_path: Optional[Path] = None, 
+        table_name: Optional[str] = None,
+        user_description: str = "",
+        llm: Any = None, 
+        **kwargs
+    ):
         super().__init__(**kwargs)
         if db_path is None:
             db_path = Path(__file__).parent.parent.parent / "dataset" / "BAUMKATOGD.db"
         object.__setattr__(self, "_db_path", db_path)
         object.__setattr__(self, "_llm", llm)
         
+        # Set table name (default: baumkatogd for Vienna trees)
+        if table_name:
+            object.__setattr__(self, "_table_name", table_name)
+        
+        # Set user-provided description for context
+        object.__setattr__(self, "_user_description", user_description)
+        
         # Initialize embeddings for vector search (lazy initialization)
         object.__setattr__(self, "_embeddings", None)
+        
+        # Update description if custom dataset is used
+        if table_name and table_name != "baumkatogd":
+            self._update_description_for_custom_dataset()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
@@ -100,9 +120,31 @@ class DatasetQueryTool(BaseTool):
     def _get_schema_info(self, conn: sqlite3.Connection) -> str:
         """Get database schema information."""
         cursor = conn.cursor()
-        cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='baumkatogd'")
+        cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{self._table_name}'")
         schema = cursor.fetchone()
         return schema[0] if schema else "Schema not found"
+    
+    def _update_description_for_custom_dataset(self) -> None:
+        """Update tool description for custom uploaded datasets."""
+        custom_description = f"""
+    Query a custom uploaded dataset using natural language.
+    The system automatically translates your question into SQL and executes it.
+    
+    Database table: {self._table_name}
+    
+    User-provided context:
+    {self._user_description if self._user_description else "No additional context provided"}
+    
+    You can ask questions like:
+    - "Quanti record ci sono in totale?"
+    - "Mostrami i primi 10 record"
+    - "Qual è il valore medio di [colonna]?"
+    - "Raggruppa i dati per [colonna]"
+    - "Trova i record dove [condizione]"
+    
+    Use this tool whenever the user asks about the dataset, statistics, counts, or wants to explore the data.
+    """
+        object.__setattr__(self, "description", custom_description)
     
     def _translate_to_sql(self, natural_query: str, schema_info: str) -> str:
         """Translate natural language query to SQL using LLM."""
@@ -114,8 +156,11 @@ class DatasetQueryTool(BaseTool):
 DATABASE SCHEMA:
 {schema_info}
 
+USER-PROVIDED CONTEXT ABOUT THE DATA:
+{self._user_description if self._user_description else "No additional context provided - infer from schema"}
+
 IMPORTANT NOTES:
-1. Table name is: baumkatogd
+1. Table name is: {self._table_name}
 2. Current year is {current_year} (use for age calculations)
 3. DBH (diameter) = trunk_circumference / {math.pi}
 4. Age = {current_year} - plant_year

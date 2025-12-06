@@ -81,9 +81,33 @@ class ChatService:
         try:
             from streamlit_app.agent import TreeEvaluatorAgent
             import streamlit as st
+            from pathlib import Path
             
-            # Inizializza agent senza mostrare messaggi ripetitivi
-            self._agent = TreeEvaluatorAgent(openai_api_key=openai_api_key)
+            # Check if custom dataset is configured
+            custom_db_path = st.session_state.get("custom_db_path", None)
+            custom_table_name = st.session_state.get("custom_table_name", None)
+            data_description = st.session_state.get("data_description", "")
+            selected_preset = st.session_state.get("selected_preset", "vienna")
+            
+            # Inizializza agent con configurazione dataset
+            if custom_db_path and custom_table_name:
+                # Custom uploaded CSV
+                self._agent = TreeEvaluatorAgent(
+                    openai_api_key=openai_api_key,
+                    custom_db_path=Path(custom_db_path),
+                    custom_table_name=custom_table_name,
+                    data_description=data_description
+                )
+            elif selected_preset == "milano":
+                # Milano preset dataset
+                self._agent = TreeEvaluatorAgent(
+                    openai_api_key=openai_api_key,
+                    dataset_preset="milano"
+                )
+            else:
+                # Default: Vienna dataset
+                self._agent = TreeEvaluatorAgent(openai_api_key=openai_api_key)
+            
             return self._agent
             
         except ImportError as e:

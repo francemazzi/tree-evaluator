@@ -74,6 +74,146 @@ class ChatUI:
                 st.rerun()
 
             st.divider()
+            st.header("📊 Gestione Dataset")
+            
+            # Dataset source selection
+            data_source = st.radio(
+                "Fonte Dati",
+                [
+                    "🇦🇹 Dataset Vienna (229K alberi)", 
+                    "🇮🇹 Dataset Milano (251K alberi)",
+                    "📁 Carica CSV Personalizzato"
+                ],
+                key="data_source_radio"
+            )
+            
+            # Handle Vienna dataset
+            if data_source == "🇦🇹 Dataset Vienna (229K alberi)":
+                # Clear custom dataset state
+                for key in ["custom_db_path", "custom_table_name", "data_description", 
+                           "uploaded_file_name", "dataset_metadata", "selected_preset"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                
+                # Set Vienna as selected preset
+                if st.session_state.get("selected_preset") != "vienna":
+                    st.session_state.selected_preset = "vienna"
+                    self._service._agent = None
+                
+                st.info("""🌳 **Dataset Vienna Trees (BAUMKATOGD)**
+                
+- **Alberi totali:** 229.298
+- **Distretti:** 23
+- **Colonne principali:** specie, anno piantumazione, circonferenza, altezza, via
+- **Periodo:** Dati storici fino ad oggi
+                """)
+            
+            # Handle Milano dataset
+            elif data_source == "🇮🇹 Dataset Milano (251K alberi)":
+                # Clear custom dataset state
+                for key in ["custom_db_path", "custom_table_name", "data_description", 
+                           "uploaded_file_name", "dataset_metadata"]:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                
+                # Set Milano as selected preset
+                if st.session_state.get("selected_preset") != "milano":
+                    st.session_state.selected_preset = "milano"
+                    self._service._agent = None
+                
+                st.info("""🌳 **Dataset Milano Trees**
+                
+- **Alberi totali:** 251.165
+- **Municipi:** 9
+- **Specie uniche:** 338
+- **Colonne principali:** genere, specie, varietà, diametro tronco, altezza, via, coordinate GPS
+- **Periodo:** Dal 1984 ad oggi
+                """)
+            
+            elif data_source == "📁 Carica CSV Personalizzato":
+                st.info("📁 Carica un file CSV per analizzarlo con l'AI")
+                
+                uploaded_file = st.file_uploader(
+                    "Seleziona file CSV",
+                    type=["csv"],
+                    key="csv_uploader",
+                    help="Il file verrà automaticamente convertito in database SQL"
+                )
+                
+                # Optional: description of the data
+                description = st.text_area(
+                    "Descrizione dati (opzionale)",
+                    placeholder="Es: Questo dataset contiene vendite mensili per regione dal 2020 al 2024...",
+                    key="data_description",
+                    help="Fornisci un contesto che aiuti l'AI a comprendere meglio i tuoi dati",
+                    height=100
+                )
+                
+                if uploaded_file:
+                    # Only process if file has changed or not yet processed
+                    current_file_name = st.session_state.get("uploaded_file_name", None)
+                    
+                    if current_file_name != uploaded_file.name:
+                        with st.spinner("📥 Caricamento e conversione CSV in corso..."):
+                            try:
+                                from pathlib import Path
+                                from streamlit_app.services.data_manager import DynamicDataManager
+                                
+                                # Initialize manager
+                                manager = DynamicDataManager(Path("temp_data"))
+                                
+                                # Process uploaded file
+                                db_path, table_name, metadata = manager.process_uploaded_file(uploaded_file)
+                                
+                                # Update session state
+                                st.session_state.custom_db_path = str(db_path)
+                                st.session_state.custom_table_name = table_name
+                                st.session_state.data_description = description
+                                st.session_state.uploaded_file_name = uploaded_file.name
+                                st.session_state.dataset_metadata = metadata
+                                
+                                # Force agent re-initialization
+                                self._service._agent = None
+                                
+                                st.success(f"✅ Dataset caricato con successo!")
+                                
+                                # Show metadata
+                                with st.expander("📋 Info Dataset"):
+                                    st.write(f"**File:** {metadata['original_filename']}")
+                                    st.write(f"**Righe:** {metadata['row_count']:,}")
+                                    st.write(f"**Colonne:** {metadata['column_count']}")
+                                    st.write(f"**Tabella SQL:** `{table_name}`")
+                                    st.write("\n**Colonne:**")
+                                    for orig, sql in metadata['column_mapping'].items():
+                                        st.write(f"- {orig} → `{sql}`")
+                                
+                            except Exception as e:
+                                st.error(f"❌ Errore nel caricamento: {str(e)}")
+                                # Clear any partial state
+                                if "custom_db_path" in st.session_state:
+                                    del st.session_state.custom_db_path
+                    else:
+                        # File already loaded, just show info
+                        st.success(f"✅ Dataset attivo: {uploaded_file.name}")
+                        if "dataset_metadata" in st.session_state:
+                            metadata = st.session_state.dataset_metadata
+                            with st.expander("📋 Info Dataset"):
+                                st.write(f"**File:** {metadata['original_filename']}")
+                                st.write(f"**Righe:** {metadata['row_count']:,}")
+                                st.write(f"**Colonne:** {metadata['column_count']}")
+                
+                # Button to reset to default dataset
+                if st.button("🔄 Torna al Dataset Vienna", use_container_width=True):
+                    # Clear custom dataset state
+                    for key in ["custom_db_path", "custom_table_name", "data_description", 
+                               "uploaded_file_name", "dataset_metadata", "selected_preset"]:
+                        if key in st.session_state:
+                            del st.session_state[key]
+                    # Force agent re-initialization
+                    self._service._agent = None
+                    st.rerun()
+
+            st.divider()
             st.header("💬 Conversazioni")
             
             # New conversation button
@@ -233,10 +373,138 @@ class ChatUI:
                 else:
                     st.markdown(message.content)
 
+    def _inject_custom_css(self) -> None:
+        """Inject custom CSS for reasoning section styling."""
+        st.markdown("""
+        <style>
+        /* Reasoning section styling - visually distinct from chat */
+        .reasoning-container {
+            background: linear-gradient(135deg, rgba(45, 55, 72, 0.95) 0%, rgba(26, 32, 44, 0.95) 100%);
+            border: 1px solid rgba(99, 179, 237, 0.3);
+            border-left: 4px solid #63b3ed;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin: 12px 0;
+            font-size: 0.9em;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+        
+        .reasoning-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #90cdf4;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(99, 179, 237, 0.2);
+        }
+        
+        .reasoning-content {
+            color: #e2e8f0;
+            line-height: 1.6;
+        }
+        
+        .reasoning-step {
+            padding: 8px 12px;
+            margin: 6px 0;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 6px;
+            border-left: 2px solid rgba(99, 179, 237, 0.5);
+        }
+        
+        .reasoning-step-emoji {
+            margin-right: 8px;
+        }
+        
+        /* Loading animation for reasoning */
+        .reasoning-loading {
+            display: inline-block;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 0.6; }
+            50% { opacity: 1; }
+        }
+        
+        /* Expander override for reasoning */
+        .stExpander[data-testid="stExpander"] > div:first-child {
+            background: linear-gradient(135deg, rgba(45, 55, 72, 0.8) 0%, rgba(26, 32, 44, 0.8) 100%);
+            border: 1px solid rgba(99, 179, 237, 0.3);
+            border-radius: 8px;
+        }
+        
+        /* Better contrast for reasoning expander header */
+        .stExpander[data-testid="stExpander"] summary {
+            color: #90cdf4 !important;
+        }
+        
+        /* Tool result styling */
+        .tool-result {
+            background: rgba(72, 187, 120, 0.1);
+            border-left: 3px solid #48bb78;
+            padding: 8px 12px;
+            margin: 8px 0;
+            border-radius: 0 6px 6px 0;
+            font-size: 0.88em;
+        }
+        
+        /* Validation styling */
+        .validation-result {
+            background: rgba(159, 122, 234, 0.1);
+            border-left: 3px solid #9f7aea;
+            padding: 8px 12px;
+            margin: 8px 0;
+            border-radius: 0 6px 6px 0;
+            font-size: 0.88em;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
+    def _format_reasoning_step(self, step: str) -> str:
+        """Format a reasoning step with appropriate emoji and styling."""
+        # Determine step type and assign emoji
+        step_lower = step.lower()
+        
+        if "✅" in step or "risultati" in step_lower:
+            emoji = "✅"
+            css_class = "tool-result"
+        elif "✓" in step or "validazione" in step_lower:
+            emoji = "✓"
+            css_class = "validation-result"
+        elif "query sql" in step_lower or "select" in step_lower:
+            emoji = "🔍"
+            css_class = "reasoning-step"
+        else:
+            emoji = "💭"
+            css_class = "reasoning-step"
+        
+        return f'<div class="{css_class}"><span class="reasoning-step-emoji">{emoji}</span>{step}</div>'
+
+    def _render_reasoning_box(self, steps: list, is_loading: bool = False) -> str:
+        """Render reasoning steps in a styled container."""
+        header_text = "🧠 Processo di ragionamento"
+        if is_loading:
+            header_text += ' <span class="reasoning-loading">●●●</span>'
+        
+        formatted_steps = "".join([self._format_reasoning_step(s) for s in steps])
+        
+        return f"""
+        <div class="reasoning-container">
+            <div class="reasoning-header">{header_text}</div>
+            <div class="reasoning-content">{formatted_steps}</div>
+        </div>
+        """
+
     def render(self) -> None:
         """Main render method for the chat UI."""
         self._ensure_session()
         st.set_page_config(page_title="Tree Evaluator Chat", page_icon="🌳", layout="centered")
+        self._inject_custom_css()
         st.title("🌳 Tree Evaluator — AI Chat")
         st.caption("Chatbot intelligente con LangChain/LangGraph per analisi alberi e dataset Vienna")
 
@@ -309,20 +577,20 @@ class ChatUI:
                         if chunk_type == "reasoning":
                             # Add reasoning step
                             reasoning_steps.append(chunk_content)
-                            # Update reasoning display
-                            reasoning_text = "\n\n".join(reasoning_steps)
-                            reasoning_placeholder.markdown(f"```\n🧠 Processo di ragionamento:\n\n{reasoning_text}\n```")
+                            # Update reasoning display with styled box
+                            reasoning_html = self._render_reasoning_box(reasoning_steps, is_loading=True)
+                            reasoning_placeholder.markdown(reasoning_html, unsafe_allow_html=True)
                         
                         elif chunk_type == "response":
                             # Update final response
                             full_response = chunk_content
-                            # Show reasoning in collapsed state
+                            # Show reasoning in collapsed expander with better styling
                             if reasoning_steps:
                                 with reasoning_placeholder:
                                     with st.expander("🧠 Processo di ragionamento", expanded=False):
-                                        for step in reasoning_steps:
-                                            st.markdown(step)
-                                            st.divider()
+                                        # Use styled HTML for each step
+                                        steps_html = "".join([self._format_reasoning_step(s) for s in reasoning_steps])
+                                        st.markdown(f'<div class="reasoning-content">{steps_html}</div>', unsafe_allow_html=True)
                             
                             # Check if response contains chart data
                             text_content, extracted_chart = self._extract_chart_from_response(full_response)
