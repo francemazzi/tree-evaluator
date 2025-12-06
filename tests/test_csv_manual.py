@@ -16,6 +16,9 @@ from streamlit_app.tools.dataset_tool import DatasetQueryTool
 import sqlite3
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
 class FakeUploadedFile:
     """Mock Streamlit uploaded file for testing."""
     
@@ -54,13 +57,13 @@ def test_step_1_load_csv():
     print_header("Test 1: Caricamento CSV")
     
     # Check if test CSV exists
-    csv_path = Path("test_data/esempio_vendite.csv")
+    csv_path = PROJECT_ROOT / "test_data" / "esempio_vendite.csv"
     if not csv_path.exists():
         print_error(f"File CSV non trovato: {csv_path}")
         print_info("Creazione file di test...")
         
         # Create test CSV
-        csv_path.parent.mkdir(exist_ok=True)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         csv_content = """Regione,Mese,Anno,Vendite,Prodotto
 Lombardia,Gennaio,2023,15000,Laptop
 Lazio,Gennaio,2023,12000,Laptop
@@ -97,7 +100,7 @@ def test_step_2_convert_to_sql(csv_content):
     
     try:
         # Initialize manager
-        manager = DynamicDataManager(Path("temp_data"))
+        manager = DynamicDataManager(PROJECT_ROOT / "temp_data")
         print_success("DynamicDataManager inizializzato")
         
         # Create fake uploaded file

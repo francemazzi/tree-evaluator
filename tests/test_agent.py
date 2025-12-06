@@ -8,9 +8,9 @@ import os
 import sys
 from pathlib import Path
 
-# Aggiungi root al path
-root = Path(__file__).parent
-sys.path.insert(0, str(root))
+# Aggiungi root del progetto al path
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
 
 def test_agent():
     """Test inizializzazione e uso dell'agent."""
@@ -48,7 +48,7 @@ def test_agent():
     
     # 3. Check dataset
     print("\n📁 Check dataset...")
-    dataset_path = root / "dataset" / "BAUMKATOGD.csv"
+    dataset_path = project_root / "dataset" / "BAUMKATOGD.csv"
     if dataset_path.exists():
         print(f"✅ Dataset trovato: {dataset_path}")
         # Conta righe
