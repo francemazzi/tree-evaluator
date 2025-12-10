@@ -29,6 +29,7 @@ from streamlit_app.tools.leaf_biomass_tool import LeafBiomassTool
 from streamlit_app.tools.stem_biomass_tool import StemBiomassTool
 from streamlit_app.tools.root_biomass_tool import RootBiomassTool
 from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
+from streamlit_app.tools.map_tool import MapGenerationTool
 
 # Load environment variables
 load_dotenv()
@@ -142,11 +143,27 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             dataset_tool = DatasetQueryTool(llm=self._base_llm)
         
         # Initialize tools with LLM
+        # Initialize MapGenerationTool with appropriate database for dataset preset
+        if custom_db_path and custom_table_name:
+            # Custom uploaded CSV - may or may not have coordinates
+            map_tool = MapGenerationTool(
+                db_path=custom_db_path,
+                table_name=custom_table_name,
+                llm=self._base_llm
+            )
+        elif dataset_preset == "milano":
+            # Milano has GPS coordinates
+            map_tool = MapGenerationTool(llm=self._base_llm)
+        else:
+            # Vienna doesn't have GPS - still create tool but it will show error message
+            map_tool = MapGenerationTool(llm=self._base_llm)
+        
         self._tools = [
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
             ChartGenerationTool(llm=self._base_llm),
+            map_tool,
             HeyerVolumeTool(),
             GeneralVolumeTool(),
             SimplifiedVolumeTool(),
@@ -541,12 +558,14 @@ Task da completare:
 2. **Environmental Estimation Tool**: Compute volume, biomass, and carbon stock using alternative formulas.
 3. **Dataset Query Tool**: Query a real Vienna trees dataset (BAUMKATOGD) with filtering, aggregation, and statistics.
 4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
-5. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
+5. **Map Generation Tool**: Create interactive maps showing tree locations (markers, clusters, heatmaps). ONLY available for Milano dataset which has GPS coordinates.
+6. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
+- When users ask to show trees on a MAP, visualize distribution geographically, or create a map, use the map generation tool. NOTE: Maps are ONLY available for the Milano dataset (has GPS coordinates). Vienna dataset does NOT have coordinates.
 - Use specific biomass/volume tools when the user asks for those specific equations (Heyer, Leaf Biomass, etc.).
 - Always provide clear, helpful responses in Italian.
 - If you need more information, ask the user.
@@ -609,6 +628,18 @@ CHART_DATA_START
 CHART_DATA_END
 
 Do not modify or summarize the JSON - include it verbatim between CHART_DATA_START and CHART_DATA_END markers.
+
+**IMPORTANT - Map Tool Usage:**
+When you use the map generation tool and it returns map data with "success": true, you MUST include the COMPLETE JSON response in your answer. Format it exactly like this:
+
+Ho creato la mappa richiesta.
+
+MAP_DATA_START
+{the complete JSON from the tool}
+MAP_DATA_END
+
+Do not modify or summarize the JSON - include it verbatim between MAP_DATA_START and MAP_DATA_END markers.
+IMPORTANT: Maps require GPS coordinates. Only the Milano dataset has coordinates. If the user tries to generate a map with Vienna dataset, explain that maps are not available for Vienna.
 
 Common wood densities (g/cm³):
 - Acer (Acero): 0.56
@@ -842,6 +873,7 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         retry_count = 0
         max_retries = 2
         chart_data_json = None  # Track chart data if generated
+        map_data_json = None  # Track map data if generated
 
         # Stream from graph with updates mode to see each node
         for event in self._graph.stream({"messages": messages}, stream_mode="updates"):
@@ -935,6 +967,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     if "chart_json" in result_data and result_data.get("success"):
                                         chart_data_json = json.dumps(result_data, ensure_ascii=False, indent=2)
                                         print(f"[DEBUG] Chart data captured! Length: {len(chart_data_json)} chars")
+                                    
+                                    # Check if this is map data (map tool returns "map_html" key)
+                                    if "map_html" in result_data and result_data.get("success"):
+                                        map_data_json = json.dumps(result_data, ensure_ascii=False, indent=2)
+                                        print(f"[DEBUG] Map data captured! Length: {len(map_data_json)} chars")
                                     
                                     reasoning = f"✅ **Risultati Tool**\n\n"
                                     
@@ -1036,6 +1073,12 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
             if chart_data_json and "CHART_DATA_START" not in final_response:
                 print(f"[DEBUG] Adding chart data to response!")
                 final_response = f"{final_response}\n\nCHART_DATA_START\n{chart_data_json}\nCHART_DATA_END"
+            
+            # If we have map data but it's not in the response, add it automatically
+            print(f"[DEBUG] Final response check - map_data_json: {map_data_json is not None}, has markers: {'MAP_DATA_START' in final_response}")
+            if map_data_json and "MAP_DATA_START" not in final_response:
+                print(f"[DEBUG] Adding map data to response!")
+                final_response = f"{final_response}\n\nMAP_DATA_START\n{map_data_json}\nMAP_DATA_END"
             try:
                 last_user = None
                 for msg in messages:

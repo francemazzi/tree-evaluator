@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from streamlit_app.models import ChatMessage, Conversation
 from streamlit_app.service import ChatService
@@ -340,21 +341,107 @@ class ChatUI:
                 pass
         
         return content, None
+
+    def _extract_map_from_response(self, content: str) -> Tuple[str, Optional[dict]]:
+        """Extract map JSON from assistant response if present.
+        
+        Returns:
+            Tuple of (text_content, map_data_dict or None)
+        """
+        # Look for map data between markers
+        print(f"[DEBUG UI] Checking for map markers in response (length: {len(content)})")
+        print(f"[DEBUG UI] Has MAP_DATA_START: {'MAP_DATA_START' in content}")
+        print(f"[DEBUG UI] Has MAP_DATA_END: {'MAP_DATA_END' in content}")
+        
+        if "MAP_DATA_START" in content and "MAP_DATA_END" in content:
+            try:
+                start_marker = "MAP_DATA_START"
+                end_marker = "MAP_DATA_END"
+                
+                start_idx = content.find(start_marker) + len(start_marker)
+                end_idx = content.find(end_marker)
+                
+                if start_idx > len(start_marker) and end_idx > start_idx:
+                    json_str = content[start_idx:end_idx].strip()
+                    print(f"[DEBUG UI] Extracted map JSON string length: {len(json_str)}")
+                    map_data = json.loads(json_str)
+                    print(f"[DEBUG UI] Successfully parsed map JSON! Has map_html: {'map_html' in map_data}")
+                    
+                    if map_data.get("success") and "map_html" in map_data:
+                        # Remove map data section from text
+                        text_before = content[:content.find(start_marker)].strip()
+                        text_after = content[content.find(end_marker) + len(end_marker):].strip()
+                        text_content = (text_before + " " + text_after).strip()
+                        print(f"[DEBUG UI] Map extraction successful!")
+                        return text_content, map_data
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"[ERROR UI] Error parsing map data: {e}")
+        
+        # Fallback: try old method (for backward compatibility)
+        if "map_html" in content.lower() or ('"success": true' in content and "map_type" in content):
+            try:
+                # Try to extract JSON object from text
+                start_idx = content.find('{')
+                end_idx = content.rfind('}')
+                if start_idx != -1 and end_idx != -1:
+                    json_str = content[start_idx:end_idx+1]
+                    map_data = json.loads(json_str)
+                    if map_data.get("success") and "map_html" in map_data:
+                        # Remove JSON from text
+                        text_before = content[:start_idx].strip()
+                        text_after = content[end_idx+1:].strip()
+                        text_content = (text_before + " " + text_after).strip()
+                        return text_content, map_data
+            except (json.JSONDecodeError, ValueError):
+                pass
+        
+        return content, None
+
+    def _render_map(self, map_data: dict, placeholder=None) -> None:
+        """Render a Folium map from map data."""
+        container = placeholder if placeholder else st
+        
+        try:
+            map_html = map_data["map_html"]
+            
+            # Render the map using Streamlit components
+            container.markdown(f"### 🗺️ {map_data.get('title', 'Mappa')}")
+            components.html(map_html, height=500, scrolling=True)
+            
+            # Show map info in expander
+            with container.expander("ℹ️ Dettagli mappa"):
+                container.write(f"**Tipo:** {map_data.get('map_type', 'N/A')}")
+                container.write(f"**Punti visualizzati:** {map_data.get('data_points', 'N/A'):,}")
+                if "sql_executed" in map_data:
+                    container.code(map_data["sql_executed"], language="sql")
+                if "center" in map_data:
+                    center = map_data["center"]
+                    container.write(f"**Centro:** {center.get('lat', 'N/A')}, {center.get('lon', 'N/A')}")
+                container.write(f"**Zoom:** {map_data.get('zoom', 'N/A')}")
+        except Exception as e:
+            container.error(f"Errore nella visualizzazione della mappa: {e}")
     
     def _render_messages(self) -> None:
         """Render all messages in the current conversation."""
         for message in st.session_state.messages:
             with st.chat_message(message.role):
-                # Check if message contains chart data
+                # Check if message contains chart or map data
                 if message.role == "assistant":
+                    # First check for chart data
                     text_content, chart_data = self._extract_chart_from_response(message.content)
                     
+                    # Then check for map data in the remaining text
+                    text_content, map_data = self._extract_map_from_response(text_content)
+                    
+                    has_visualization = False
+                    
+                    # Display text content first
+                    if text_content:
+                        st.markdown(text_content)
+                    
+                    # Display chart if present
                     if chart_data and chart_data.get("success"):
-                        # Display text content
-                        if text_content:
-                            st.markdown(text_content)
-                        
-                        # Display chart
+                        has_visualization = True
                         try:
                             chart_json = chart_data["chart_json"]
                             fig = go.Figure(json.loads(chart_json))
@@ -368,7 +455,14 @@ class ChatUI:
                                     st.code(chart_data["sql_executed"], language="sql")
                         except Exception as e:
                             st.error(f"Errore nella visualizzazione del grafico: {e}")
-                    else:
+                    
+                    # Display map if present
+                    if map_data and map_data.get("success"):
+                        has_visualization = True
+                        self._render_map(map_data)
+                    
+                    # If no visualization was found and no text was displayed, show original content
+                    if not has_visualization and not text_content:
                         st.markdown(message.content)
                 else:
                     st.markdown(message.content)
@@ -559,10 +653,12 @@ class ChatUI:
                     reasoning_placeholder = st.empty()
                     response_placeholder = st.empty()
                     chart_placeholder = st.empty()
+                    map_placeholder = st.empty()
                     
                     reasoning_steps = []
                     full_response = ""
                     chart_data = None
+                    map_data = None
                     
                     # Stream from agent
                     for chunk in self._service.stream_reply(
@@ -595,8 +691,15 @@ class ChatUI:
                             # Check if response contains chart data
                             text_content, extracted_chart = self._extract_chart_from_response(full_response)
                             
+                            # Check if response contains map data
+                            text_content, extracted_map = self._extract_map_from_response(text_content)
+                            
                             if extracted_chart and extracted_chart.get("success"):
                                 chart_data = extracted_chart
+                            if extracted_map and extracted_map.get("success"):
+                                map_data = extracted_map
+                            
+                            if chart_data or map_data:
                                 response_placeholder.markdown(text_content + "▌")
                             else:
                                 response_placeholder.markdown(full_response + "▌")
@@ -604,9 +707,13 @@ class ChatUI:
                     # Final update without cursor
                     if full_response:
                         text_content, extracted_chart = self._extract_chart_from_response(full_response)
+                        text_content, extracted_map = self._extract_map_from_response(text_content)
                         
+                        has_visualization = False
+                        
+                        # Display text content
                         if extracted_chart and extracted_chart.get("success"):
-                            # Display text without chart JSON
+                            has_visualization = True
                             if text_content:
                                 response_placeholder.markdown(text_content)
                             
@@ -625,7 +732,20 @@ class ChatUI:
                                             st.code(extracted_chart["sql_executed"], language="sql")
                                 except Exception as e:
                                     st.error(f"Errore nella visualizzazione del grafico: {e}")
-                        else:
+                        
+                        # Display map if present
+                        if extracted_map and extracted_map.get("success"):
+                            has_visualization = True
+                            if not extracted_chart:  # Only show text if not already shown for chart
+                                if text_content:
+                                    response_placeholder.markdown(text_content)
+                            
+                            # Display map
+                            with map_placeholder:
+                                self._render_map(extracted_map)
+                        
+                        # If no visualization, show full response
+                        if not has_visualization:
                             response_placeholder.markdown(full_response)
                 
                 # Add assistant message to session state
