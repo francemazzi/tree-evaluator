@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Optional
+
+from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
+
+class LlmProvider(str, Enum):
+    OPENAI = "openai"
+    OLLAMA = "ollama"
+
+    @classmethod
+    def from_string(cls, value: Optional[str]) -> "LlmProvider":
+        normalized = (value or "").strip().lower()
+        if normalized in ("ollama",):
+            return cls.OLLAMA
+        return cls.OPENAI
+
+
+@dataclass(frozen=True)
+class LlmSettings:
+    provider: LlmProvider
+
+    # OpenAI
+    openai_api_key: Optional[str]
+    openai_chat_model: str
+    openai_fallback_model: str
+    openai_embedding_model: str
+
+    # Ollama
+    ollama_base_url: str
+    ollama_chat_model: str
+    ollama_fallback_model: str
+    ollama_embedding_model: str
+
+    # Temperatures
+    chat_temperature: float
+    fallback_temperature: float
+
+
+class LlmSettingsReader:
+    """Reads LLM settings from environment variables (single source of truth)."""
+
+    def read(
+        self,
+        openai_api_key_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        openai_chat_model_override: Optional[str] = None,
+        openai_fallback_model_override: Optional[str] = None,
+        openai_embedding_model_override: Optional[str] = None,
+        ollama_base_url_override: Optional[str] = None,
+        ollama_chat_model_override: Optional[str] = None,
+        ollama_fallback_model_override: Optional[str] = None,
+        ollama_embedding_model_override: Optional[str] = None,
+    ) -> LlmSettings:
+        provider = LlmProvider.from_string(provider_override or os.getenv("LLM_PROVIDER"))
+
+        openai_api_key = openai_api_key_override or os.getenv("OPENAI_API_KEY")
+
+        return LlmSettings(
+            provider=provider,
+            openai_api_key=openai_api_key,
+            openai_chat_model=openai_chat_model_override or os.getenv("OPENAI_CHAT_MODEL", "gpt-5"),
+            openai_fallback_model=openai_fallback_model_override or os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
+            openai_embedding_model=openai_embedding_model_override or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+            ollama_base_url=(
+                ollama_base_url_override
+                or os.getenv("OLLAMA_BASE_URL")
+                or OllamaBaseUrlResolver().resolve()
+            ),
+            ollama_chat_model=ollama_chat_model_override or os.getenv("OLLAMA_CHAT_MODEL", "qwen2.5:7b-instruct"),
+            # Fallback is optional for Ollama; we intentionally ignore any env var fallback to avoid
+            # "model not found" issues when the UI-selected model differs from env defaults.
+            ollama_fallback_model=ollama_fallback_model_override or "",
+            ollama_embedding_model=ollama_embedding_model_override or os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+            chat_temperature=float(os.getenv("LLM_TEMPERATURE", "1.0")),
+            fallback_temperature=float(os.getenv("LLM_FALLBACK_TEMPERATURE", "0.7")),
+        )
+
+
+class LlmFactory:
+    """Creates chat models and embeddings for the configured provider."""
+
+    def __init__(self, settings: LlmSettings) -> None:
+        self._settings = settings
+
+    def get_provider(self) -> LlmProvider:
+        return self._settings.provider
+
+    def create_chat_model(self) -> Any:
+        if self._settings.provider == LlmProvider.OLLAMA:
+            return self._create_ollama_chat(
+                model=self._settings.ollama_chat_model,
+                temperature=self._settings.chat_temperature,
+            )
+        return self._create_openai_chat(
+            model=self._settings.openai_chat_model,
+            temperature=self._settings.chat_temperature,
+        )
+
+    def create_fallback_chat_model(self) -> Any:
+        if self._settings.provider == LlmProvider.OLLAMA:
+            fallback_model = (self._settings.ollama_fallback_model or "").strip() or self._settings.ollama_chat_model
+            return self._create_ollama_chat(
+                model=fallback_model,
+                temperature=self._settings.fallback_temperature,
+            )
+        return self._create_openai_chat(
+            model=self._settings.openai_fallback_model,
+            temperature=self._settings.fallback_temperature,
+        )
+
+    def create_embeddings(self) -> Any:
+        if self._settings.provider == LlmProvider.OLLAMA:
+            return self._create_ollama_embeddings(model=self._settings.ollama_embedding_model)
+        return self._create_openai_embeddings(model=self._settings.openai_embedding_model)
+
+    def validate(self) -> None:
+        """Raise a ValueError if mandatory settings for the provider are missing."""
+        if self._settings.provider == LlmProvider.OPENAI and not self._settings.openai_api_key:
+            raise ValueError(
+                "OpenAI API key not found. Provide it via UI Settings or set OPENAI_API_KEY environment variable."
+            )
+
+    def _create_openai_chat(self, model: str, temperature: float) -> Any:
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model,
+            temperature=temperature,
+            api_key=self._settings.openai_api_key,
+        )
+
+    def _create_openai_embeddings(self, model: str) -> Any:
+        from langchain_openai import OpenAIEmbeddings
+
+        return OpenAIEmbeddings(model=model, api_key=self._settings.openai_api_key)
+
+    def _create_ollama_chat(self, model: str, temperature: float) -> Any:
+        from langchain_ollama import ChatOllama
+
+        return ChatOllama(
+            model=model,
+            temperature=temperature,
+            base_url=self._settings.ollama_base_url,
+        )
+
+    def _create_ollama_embeddings(self, model: str) -> Any:
+        from langchain_ollama import OllamaEmbeddings
+
+        return OllamaEmbeddings(
+            model=model,
+            base_url=self._settings.ollama_base_url,
+        )
+
+

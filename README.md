@@ -59,6 +59,29 @@ OPENAI_API_KEY=sk-xxx docker compose up
 
 Vedi [DOCKER.md](DOCKER.md) per configurazione avanzata.
 
+**Uso Ollama in locale (senza API key):**
+
+```bash
+# Abilita Ollama come provider LLM
+cp .env.example .env
+echo "LLM_PROVIDER=ollama" >> .env
+
+# (Opzionale) Modelli
+echo "OLLAMA_CHAT_MODEL=qwen2.5:7b-instruct" >> .env
+echo "OLLAMA_EMBEDDING_MODEL=nomic-embed-text" >> .env
+
+# Avvio (di default usa Ollama installato sul tuo host)
+docker compose up --build
+
+# Prima esecuzione: scarica i modelli (sul tuo host)
+ollama pull qwen2.5:7b-instruct
+ollama pull nomic-embed-text
+
+# (Opzionale) Se vuoi Ollama dentro Docker invece che sull'host:
+# docker compose --profile with-ollama up --build
+# e imposta: OLLAMA_BASE_URL=http://ollama:11434
+```
+
 ### One-line install and run
 
 macOS/Linux:

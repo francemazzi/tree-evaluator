@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated, List, Literal, Optional, Sequence, TypedDict
+from typing import Annotated, List, Literal, Optional, Sequence, TypedDict, Any, Dict
 from pathlib import Path
 import re
 from decimal import Decimal, InvalidOperation
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.vectorstores import InMemoryVectorStore
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from streamlit_app.llm.factory import LlmFactory, LlmProvider, LlmSettings, LlmSettingsReader
+from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
@@ -45,6 +47,13 @@ class AgentState(TypedDict):
     context_summary: Optional[str]  # Summary of important context
     message_count: Optional[int]  # Track conversation length
     chart_data: Optional[dict]  # Store chart data when chart tool is called
+    retry_count: Optional[int]  # Number of validator retries attempted in this run
+    tool_last_fingerprint: Optional[str]  # Last tool-call fingerprint (for loop detection)
+    tool_repeat_count: Optional[int]  # Consecutive repeats of the same fingerprint
+    tool_loop_detected: Optional[bool]  # True if loop guard stops the graph
+    tool_loop_action: Optional[Literal["continue", "replan", "stop"]]  # Next step after tool loop guard
+    tool_loop_details: Optional[dict]  # Details about repeated tool calls / last SQL, etc.
+    tool_loop_replan_count: Optional[int]  # Number of replans attempted after loop detection
 
 
 class TreeEvaluatorAgent:
@@ -91,6 +100,12 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
     def __init__(
         self, 
         openai_api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        openai_chat_model: Optional[str] = None,
+        openai_embedding_model: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        ollama_chat_model: Optional[str] = None,
+        ollama_embedding_model: Optional[str] = None,
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
         data_description: str = "",
@@ -105,19 +120,30 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
         """
-        # Get API key - prioritize parameter, then env var
-        api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "OpenAI API key not found. Provide it via UI Settings or set OPENAI_API_KEY environment variable."
-            )
-
-        # Initialize LLM (used by tools for text-to-SQL translation)
-        self._base_llm = ChatOpenAI(
-            model="gpt-5",
-            temperature=1,  # Lower temperature for higher determinism and exact phrasing
-            api_key=api_key,
+        # LLM provider settings (OpenAI/Ollama)
+        self._llm_settings: LlmSettings = LlmSettingsReader().read(
+            openai_api_key_override=openai_api_key,
+            provider_override=provider,
+            openai_chat_model_override=openai_chat_model,
+            openai_embedding_model_override=openai_embedding_model,
+            ollama_base_url_override=ollama_base_url,
+            ollama_chat_model_override=ollama_chat_model,
+            ollama_embedding_model_override=ollama_embedding_model,
         )
+        self._llm_factory = LlmFactory(self._llm_settings)
+        self._llm_factory.validate()
+
+        # Initialize LLMs (primary + fallback)
+        if self._llm_settings.provider == LlmProvider.OLLAMA:
+            self._primary_model = self._llm_settings.ollama_chat_model
+            self._fallback_model = (self._llm_settings.ollama_fallback_model or "").strip() or self._llm_settings.ollama_chat_model
+        else:
+            self._primary_model = self._llm_settings.openai_chat_model
+            self._fallback_model = self._llm_settings.openai_fallback_model
+
+        self._base_llm = self._llm_factory.create_chat_model()
+        self._fallback_llm = self._llm_factory.create_fallback_chat_model()
+        self._embeddings = self._llm_factory.create_embeddings()
 
         # Initialize DatasetQueryTool with appropriate database
         if custom_db_path and custom_table_name:
@@ -126,7 +152,9 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 db_path=custom_db_path,
                 table_name=custom_table_name,
                 user_description=data_description,
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
             )
         elif dataset_preset in self.DATASET_PRESETS:
             # Preset dataset (Vienna or Milano)
@@ -136,11 +164,17 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 db_path=db_path,
                 table_name=preset["table_name"],
                 user_description=preset["description"],
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
             )
         else:
             # Default: Vienna
-            dataset_tool = DatasetQueryTool(llm=self._base_llm)
+            dataset_tool = DatasetQueryTool(
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
+            )
         
         # Initialize tools with LLM
         # Initialize MapGenerationTool with appropriate database for dataset preset
@@ -149,20 +183,21 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             map_tool = MapGenerationTool(
                 db_path=custom_db_path,
                 table_name=custom_table_name,
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
             )
         elif dataset_preset == "milano":
             # Milano has GPS coordinates
-            map_tool = MapGenerationTool(llm=self._base_llm)
+            map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
         else:
             # Vienna doesn't have GPS - still create tool but it will show error message
-            map_tool = MapGenerationTool(llm=self._base_llm)
+            map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
         
         self._tools = [
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
-            ChartGenerationTool(llm=self._base_llm),
+            ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm),
             map_tool,
             HeyerVolumeTool(),
             GeneralVolumeTool(),
@@ -192,7 +227,10 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         workflow.add_node("query_optimizer", self._optimize_query)
         workflow.add_node("agent", self._call_model)
         workflow.add_node("tools", ToolNode(self._tools))
+        workflow.add_node("tool_loop_guard", self._guard_tool_loop)
+        workflow.add_node("tool_loop_replanner", self._replan_after_tool_loop)
         workflow.add_node("validator", self._validate_response)
+        workflow.add_node("retry_counter", self._increment_retry_count)
 
         # Set entry point - start with context management
         workflow.set_entry_point("context_manager")
@@ -213,8 +251,18 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             },
         )
 
-        # After tool execution, return to agent
-        workflow.add_edge("tools", "agent")
+        # After tool execution, run loop guard before returning to agent
+        workflow.add_edge("tools", "tool_loop_guard")
+        workflow.add_conditional_edges(
+            "tool_loop_guard",
+            self._should_continue_after_tool_guard,
+            {
+                "continue": "agent",
+                "replan": "tool_loop_replanner",
+                "stop": END,
+            },
+        )
+        workflow.add_edge("tool_loop_replanner", "agent")
 
         # Validator decides: complete or retry
         workflow.add_conditional_edges(
@@ -222,11 +270,111 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             self._should_retry,
             {
                 "complete": END,
-                "retry": "agent",
+                "retry": "retry_counter",
             },
         )
 
+        # After incrementing retry counter, go back to agent
+        workflow.add_edge("retry_counter", "agent")
+
         return workflow.compile()
+
+    def _guard_tool_loop(self, state: AgentState) -> dict:
+        guard = ToolLoopGuard(max_consecutive_repeats=3)
+        messages = state.get("messages") or []
+        last_fp = state.get("tool_last_fingerprint")
+        repeat = int(state.get("tool_repeat_count") or 0)
+
+        decision, new_fp, new_repeat = guard.evaluate(messages=messages, last_fingerprint=last_fp, repeat_count=repeat)
+        if decision.action == "stop" and decision.user_message:
+            return {
+                "messages": [AIMessage(content=decision.user_message)],
+                "tool_last_fingerprint": new_fp,
+                "tool_repeat_count": new_repeat,
+                "tool_loop_detected": True,
+                "tool_loop_action": "stop",
+                "tool_loop_details": decision.details,
+            }
+        if decision.action == "replan":
+            return {
+                "tool_last_fingerprint": new_fp,
+                "tool_repeat_count": new_repeat,
+                "tool_loop_detected": True,
+                "tool_loop_action": "replan",
+                "tool_loop_details": decision.details,
+            }
+        return {
+            "tool_last_fingerprint": new_fp,
+            "tool_repeat_count": new_repeat,
+            "tool_loop_detected": False,
+            "tool_loop_action": "continue",
+            "tool_loop_details": None,
+        }
+
+    def _should_continue_after_tool_guard(self, state: AgentState) -> Literal["continue", "replan", "stop"]:
+        action = state.get("tool_loop_action") or "continue"
+        if action in ("continue", "replan", "stop"):
+            return action
+        return "continue"
+
+    def _replan_after_tool_loop(self, state: AgentState) -> dict:
+        """
+        Recover from repeated identical tool calls without stopping immediately.
+        We inject a SystemMessage that forces the agent to change strategy or ask a clarifying question.
+        """
+        max_replans = 2
+        current = int(state.get("tool_loop_replan_count") or 0)
+        details: Dict[str, Any] = state.get("tool_loop_details") or {}
+
+        # If we've already tried replanning enough times, ask the user for clarification and stop.
+        if current >= max_replans:
+            fallback_user_msg = (
+                "Mi sto bloccando ripetendo la stessa chiamata tool senza fare progressi.\n\n"
+                "Per sbloccare la risposta, mi confermi cosa vuoi ottenere esattamente e con quali vincoli?\n"
+                "- Cosa intendi per risultato “corretto” in questo caso?\n"
+                "- Vuoi che io provi una strategia alternativa o che mi fermi e ti faccia domande mirate?\n\n"
+                "Tool utilizzati: Dataset Query Tool"
+            )
+            return {
+                "messages": [AIMessage(content=fallback_user_msg)],
+                "tool_loop_action": "stop",
+                "tool_loop_detected": True,
+                "tool_loop_replan_count": current,
+            }
+
+        tool_calls = details.get("tool_calls") or []
+        last_sql = details.get("sql")
+        fingerprint = details.get("fingerprint")
+
+        replanning_prompt = (
+            "You are recovering from a tool-call loop.\n"
+            "You must NOT repeat the exact same tool call with the same arguments again.\n\n"
+            "Context:\n"
+            f"- repeated_fingerprint: {fingerprint}\n"
+            f"- last_sql: {last_sql}\n"
+            f"- tool_calls: {json.dumps(tool_calls, ensure_ascii=False)}\n\n"
+            "Task:\n"
+            "1) Briefly explain (to yourself) why the repetition happened.\n"
+            "2) Decide ONE of the following next actions:\n"
+            "   A) Use a DIFFERENT tool, or\n"
+            "   B) Call the SAME tool but with meaningfully different arguments (broaden/narrow filters, change aggregation, change top-k), or\n"
+            "   C) Ask the user a single, specific clarification question.\n"
+            "3) Then proceed with that action.\n\n"
+            "Rules:\n"
+            "- Prefer action B if a small query change can resolve it.\n"
+            "- If the tool output already contains the answer, do NOT call tools again; answer directly.\n"
+        )
+
+        return {
+            "messages": [SystemMessage(content=replanning_prompt)],
+            "tool_loop_action": "continue",
+            "tool_loop_detected": False,
+            "tool_loop_replan_count": current + 1,
+        }
+
+    def _increment_retry_count(self, state: AgentState) -> dict:
+        current = int(state.get("retry_count") or 0)
+        return {"retry_count": current + 1}
 
     def _get_dataset_tool(self) -> Optional[DatasetQueryTool]:
         for tool in self._tools:
@@ -318,13 +466,61 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                     text_blob += " " + v
         return self._extract_first_numeric(text_blob)
 
+    def _retrieve_relevant_history(
+        self,
+        messages: Sequence[BaseMessage],
+        query: str,
+        top_k: int = 4,
+        max_snippet_chars: int = 800,
+        max_total_chars: int = 2200,
+    ) -> List[str]:
+        """Retrieve the most relevant past chat snippets using vector search."""
+        # Build corpus from non-system messages, excluding the latest user query itself
+        corpus = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                continue
+            if isinstance(msg, HumanMessage) and msg.content == query:
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            # Truncate each message to avoid huge payloads
+            if len(content) > max_snippet_chars:
+                content = content[:max_snippet_chars] + "... [troncato]"
+            corpus.append((content, msg))
+
+        if not corpus:
+            return []
+
+        # Create vectorstore
+        vectorstore = InMemoryVectorStore.from_texts(
+            texts=[c[0] for c in corpus],
+            embedding=self._embeddings,
+            metadatas=[{"role": "user" if isinstance(c[1], HumanMessage) else "assistant"} for c in corpus],
+        )
+
+        # Similarity search
+        k = min(top_k, len(corpus))
+        results = vectorstore.similarity_search(query, k=k)
+
+        snippets: List[str] = []
+        total_chars = 0
+        for doc in results:
+            snippet = doc.page_content.strip()
+            if not snippet:
+                continue
+            # Ensure we do not exceed global cap
+            if total_chars + len(snippet) > max_total_chars:
+                break
+            snippets.append(snippet)
+            total_chars += len(snippet)
+
+        return snippets
+
     def _generate_one_line(self, question: str, number_str: str) -> Optional[str]:
         try:
-            llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=0.1,
-                api_key=self._llm.client.api_key,
-            )
+            llm = self._create_chat_without_tools(model=self._primary_model, temperature=0.1)
             prompt = (
                 "Scrivi una sola riga in italiano che risponda direttamente alla domanda, "
                 "contenendo il numero esatto fornito e pochissimo testo. "
@@ -338,6 +534,17 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             return line if number_str in line else f"{line} {number_str}"
         except Exception:
             return None
+
+    def _create_chat_without_tools(self, model: str, temperature: float) -> Any:
+        """Create a plain chat model (no tool binding) for small internal prompts."""
+        if self._llm_settings.provider == LlmProvider.OLLAMA:
+            from langchain_ollama import ChatOllama
+
+            return ChatOllama(model=model, temperature=temperature, base_url=self._llm_settings.ollama_base_url)
+
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(model=model, temperature=temperature, api_key=self._llm_settings.openai_api_key)
 
     def _finalize_response(self, question: str, response_text: str) -> str:
         first_line = (response_text or "").splitlines()[0] if response_text else ""
@@ -501,12 +708,7 @@ Esempio 4 - Rapporto Ipogeo/Epigeo:
 REGOLA CRITICA: Scomponi SEMPRE la domanda in 3-8 sottotask specifici. NON creare un singolo task generico."""
         
         try:
-            # Create a temporary LLM without tools for optimization
-            optimizer_llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=1,
-                api_key=self._llm.client.api_key,
-            )
+            optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
             
             response = optimizer_llm.invoke([HumanMessage(content=optimizer_prompt)])
             
@@ -654,7 +856,76 @@ Common wood densities (g/cm³):
             )
             messages = [system_msg] + list(messages)
 
-        response = self._llm.invoke(messages)
+        def _truncate(msg: BaseMessage, max_len: int = 800) -> BaseMessage:
+            """Return a shallow copy of msg with truncated content."""
+            content = (msg.content or "") if hasattr(msg, "content") else ""
+            if len(content) > max_len:
+                content = content[:max_len] + "... [troncato]"
+            if isinstance(msg, HumanMessage):
+                return HumanMessage(content=content)
+            if isinstance(msg, AIMessage):
+                return AIMessage(content=content)
+            if isinstance(msg, SystemMessage):
+                return SystemMessage(content=content)
+            return msg
+
+        # Retrieve relevant history snippets to reduce full-context length
+        last_user_content = None
+        last_user_msg = None
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                last_user_content = msg.content
+                last_user_msg = msg
+                break
+
+        context_block = None
+        if last_user_content:
+            # Ultra-conservative: disable context_block to minimize tokens
+            snippets = []
+
+        # Build a minimal message list: all system messages, last assistant (if any), last user, plus context block
+        system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+        last_assistant = None
+        if last_user_msg:
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    last_assistant = msg
+                    break
+
+        minimal_messages = []
+        minimal_messages.extend(system_messages[:1])  # only the first system message
+        if context_block:
+            minimal_messages.append(context_block)
+        if last_assistant:
+            minimal_messages.append(last_assistant)
+        if last_user_msg:
+            minimal_messages.append(last_user_msg)
+
+        # Truncate each message to keep tokens low
+        minimal_messages = [_truncate(m, max_len=400) for m in minimal_messages]
+
+        try:
+            response = self._llm.invoke(minimal_messages)
+        except Exception as e:
+            # Fallback to lighter model on rate limit / request too large
+            if "rate_limit" in str(e).lower() or "429" in str(e) or "request too large" in str(e).lower():
+                try:
+                    # Rebind tools to fallback LLM
+                    for tool in self._tools:
+                        if hasattr(tool, "_llm"):
+                            object.__setattr__(tool, "_llm", self._fallback_llm)
+                    self._llm = self._fallback_llm.bind_tools(self._tools)
+                    # Also drop assistant context to shrink prompt further
+                    minimal_fallback = []
+                    minimal_fallback.extend(system_messages[:1])
+                    if last_user_msg:
+                        minimal_fallback.append(last_user_msg)
+                    minimal_fallback = [_truncate(m, max_len=300) for m in minimal_fallback]
+                    response = self._llm.invoke(minimal_fallback)
+                except Exception:
+                    raise
+            else:
+                raise
         try:
             user_question = None
             for msg in messages:
@@ -735,12 +1006,7 @@ Rispondi in formato JSON:
 }}"""
         
         try:
-            # Create validator LLM
-            validator_llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=1,
-                api_key=self._llm.client.api_key,
-            )
+            validator_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
             
             response = validator_llm.invoke([HumanMessage(content=validation_prompt)])
             
@@ -803,14 +1069,17 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
     def _should_retry(self, state: AgentState) -> Literal["complete", "retry"]:
         """Determine if we should retry or complete based on validation."""
         validation_result = state.get("validation_result", {})
+        retry_count = int(state.get("retry_count") or 0)
+        max_retries = 2
         
         # Check if response is complete
         is_complete = validation_result.get("is_complete", True)
         
         if is_complete:
             return "complete"
-        else:
-            return "retry"
+        if retry_count >= max_retries:
+            return "complete"
+        return "retry"
 
     def chat(self, message: str, history: Optional[List[dict]] = None) -> str:
         """Chat with the agent.
@@ -835,7 +1104,19 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         messages.append(HumanMessage(content=message))
 
         # Run graph
-        result = self._graph.invoke({"messages": messages})
+        result = self._graph.invoke(
+            {
+                "messages": messages,
+                "retry_count": 0,
+                "tool_last_fingerprint": None,
+                "tool_repeat_count": 0,
+                "tool_loop_detected": False,
+                "tool_loop_action": "continue",
+                "tool_loop_details": None,
+                "tool_loop_replan_count": 0,
+            },
+            config={"recursion_limit": 80},
+        )
 
         # Extract final response
         final_message = result["messages"][-1]
@@ -876,7 +1157,20 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         map_data_json = None  # Track map data if generated
 
         # Stream from graph with updates mode to see each node
-        for event in self._graph.stream({"messages": messages}, stream_mode="updates"):
+        for event in self._graph.stream(
+            {
+                "messages": messages,
+                "retry_count": 0,
+                "tool_last_fingerprint": None,
+                "tool_repeat_count": 0,
+                "tool_loop_detected": False,
+                "tool_loop_action": "continue",
+                "tool_loop_details": None,
+                "tool_loop_replan_count": 0,
+            },
+            config={"recursion_limit": 80},
+            stream_mode="updates",
+        ):
             # event is a dict with node_name: node_output
             for node_name, node_output in event.items():
                 
@@ -1041,6 +1335,22 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     # If not JSON, just show completion message
                                     reasoning = f"✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
                                     yield {"type": "reasoning", "content": reasoning}
+
+                elif node_name == "tool_loop_guard":
+                    # If the loop guard decided to stop, it injects an AIMessage with a user-facing prompt.
+                    node_messages = node_output.get("messages", [])
+                    if node_messages:
+                        last_msg = node_messages[-1]
+                        if isinstance(last_msg, AIMessage) and last_msg.content:
+                            final_response = last_msg.content
+                            yield {"type": "reasoning", "content": "🛑 **Stop Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Interrompo ed entro in modalità chiarimento.\n"}
+                    else:
+                        # Replan path: no user-facing message, we attempt a recovery step.
+                        if node_output.get("tool_loop_action") == "replan":
+                            yield {"type": "reasoning", "content": "🔁 **Recovery Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Provo a cambiare strategia (replanning) invece di fermarmi subito.\n"}
+
+                elif node_name == "tool_loop_replanner":
+                    yield {"type": "reasoning", "content": "🧠 **Replanning**\n\nSto riformulando il prossimo passo per evitare di ripetere la stessa query/tool e provare una strada alternativa.\n"}
                 
                 elif node_name == "validator":
                     validation = node_output.get("validation_result", {})
