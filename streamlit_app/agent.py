@@ -32,6 +32,7 @@ from streamlit_app.tools.stem_biomass_tool import StemBiomassTool
 from streamlit_app.tools.root_biomass_tool import RootBiomassTool
 from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
 from streamlit_app.tools.map_tool import MapGenerationTool
+from streamlit_app.tools.species_list_tool import SpeciesListQueryTool
 
 # Load environment variables
 load_dotenv()
@@ -175,6 +176,16 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 fallback_llm=self._fallback_llm,
                 embeddings=self._embeddings,
             )
+
+        # Initialize SpeciesListQueryTool (botanical taxonomy/traits context)
+        species_list_db_path = Path(__file__).parent.parent / "dataset" / "species_list.db"
+        species_list_tool = SpeciesListQueryTool(
+            db_path=species_list_db_path,
+            table_name="species_list",
+            llm=self._base_llm,
+            fallback_llm=self._fallback_llm,
+            embeddings=self._embeddings,
+        )
         
         # Initialize tools with LLM
         # Initialize MapGenerationTool with appropriate database for dataset preset
@@ -197,6 +208,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
+            species_list_tool,
             ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm),
             map_tool,
             HeyerVolumeTool(),
@@ -762,10 +774,12 @@ Task da completare:
 4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
 5. **Map Generation Tool**: Create interactive maps showing tree locations (markers, clusters, heatmaps). ONLY available for Milano dataset which has GPS coordinates.
 6. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
+7. **Species List Query Tool**: Query a plant species list (taxonomy + traits) to provide botanical context (family/order/class, growth form, leaf type, etc.).
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
+- When users ask for botanical context about plant species (family/order/class, species code, growth form, leaf type, synonyms), use the species list query tool.
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
 - When users ask to show trees on a MAP, visualize distribution geographically, or create a map, use the map generation tool. NOTE: Maps are ONLY available for the Milano dataset (has GPS coordinates). Vienna dataset does NOT have coordinates.
 - Use specific biomass/volume tools when the user asks for those specific equations (Heyer, Leaf Biomass, etc.).
