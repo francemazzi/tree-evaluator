@@ -19,7 +19,7 @@ class ToolLoopDecision:
 class ToolLoopGuard:
     """Detects repeated tool calls and stops the graph to avoid infinite loops."""
 
-    def __init__(self, max_consecutive_repeats: int = 3) -> None:
+    def __init__(self, max_consecutive_repeats: int = 2) -> None:
         self._max_consecutive_repeats = max_consecutive_repeats
 
     def evaluate(

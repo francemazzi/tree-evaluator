@@ -33,6 +33,7 @@ from streamlit_app.tools.root_biomass_tool import RootBiomassTool
 from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
 from streamlit_app.tools.map_tool import MapGenerationTool
 from streamlit_app.tools.species_list_tool import SpeciesListQueryTool
+from streamlit_app.tools.paper_search_tool import PaperSearchTool
 
 # Load environment variables
 load_dotenv()
@@ -55,6 +56,8 @@ class AgentState(TypedDict):
     tool_loop_action: Optional[Literal["continue", "replan", "stop"]]  # Next step after tool loop guard
     tool_loop_details: Optional[dict]  # Details about repeated tool calls / last SQL, etc.
     tool_loop_replan_count: Optional[int]  # Number of replans attempted after loop detection
+    total_tool_calls: Optional[int]  # Total number of tool calls in this run (for global limit)
+    tool_call_counts: Optional[Dict[str, int]]  # Count of calls per tool name (for detecting repeated tool abuse)
 
 
 class TreeEvaluatorAgent:
@@ -222,6 +225,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             StemBiomassTool(),
             RootBiomassTool(),
             TotalBiomassTool(),
+            PaperSearchTool(),
         ]
 
         # Initialize LLM with tools bound
@@ -292,12 +296,115 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         return workflow.compile()
 
     def _guard_tool_loop(self, state: AgentState) -> dict:
-        guard = ToolLoopGuard(max_consecutive_repeats=3)
         messages = state.get("messages") or []
+        from langchain_core.messages import ToolMessage
+        
+        # Count ALL ToolMessages in the conversation by tool name
+        # This is the definitive count - each ToolMessage = one tool execution
+        tool_call_counts: Dict[str, int] = {}
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                # ToolMessage has a 'name' attribute with the tool name
+                tool_name = getattr(msg, "name", None)
+                if tool_name:
+                    tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+        
+        # Check if any single tool has been called too many times (even with different args)
+        MAX_CALLS_PER_TOOL = 5  # If same tool called 5+ times, force replan
+        abused_tool = None
+        for tool_name, count in tool_call_counts.items():
+            if count >= MAX_CALLS_PER_TOOL:
+                abused_tool = tool_name
+                break
+        
+        if abused_tool:
+            call_count = tool_call_counts[abused_tool]
+            replan_count = int(state.get("tool_loop_replan_count") or 0)
+            
+            details = {
+                "tool_calls": [{"name": abused_tool}],
+                "fingerprint": f"{abused_tool}:repeated_{call_count}_times",
+                "abuse_detected": True,
+                "call_count": call_count,
+            }
+            
+            # If tool called 10+ times OR we've already tried 3+ replans, FORCE STOP
+            if call_count >= 10 or replan_count >= 3:
+                # Extract papers found from ToolMessages
+                papers_found = self._extract_papers_from_messages(messages)
+                
+                # Build response with sources
+                fallback_response = (
+                    f"Ho cercato su arXiv informazioni sulla formula per l'assorbimento del carbonio. "
+                    f"Ecco cosa ho trovato dopo {call_count} ricerche:\n\n"
+                )
+                
+                if papers_found:
+                    # Check if we have actual papers or just errors
+                    real_papers = [p for p in papers_found if p.get("source") != "error"]
+                    error_papers = [p for p in papers_found if p.get("source") == "error"]
+                    
+                    if real_papers:
+                        fallback_response += "**📚 Paper trovati su arXiv:**\n\n"
+                        for i, paper in enumerate(real_papers[:5], 1):  # Max 5 papers
+                            title = paper.get("title", "Titolo non disponibile")
+                            authors = paper.get("authors", "Autori non disponibili")
+                            link = paper.get("link", "")
+                            abstract = paper.get("abstract", "")
+                            if abstract and len(abstract) > 200:
+                                abstract = abstract[:200] + "..."
+                            
+                            fallback_response += f"{i}. **{title}**\n"
+                            if authors and authors != "N/A":
+                                fallback_response += f"   - Autori: {authors}\n"
+                            if abstract:
+                                fallback_response += f"   - Abstract: {abstract}\n"
+                            if link:
+                                fallback_response += f"   - 🔗 [Link al paper]({link})\n"
+                            fallback_response += "\n"
+                    elif error_papers:
+                        fallback_response += f"*⚠️ Errore durante la ricerca su arXiv: {error_papers[0].get('abstract', 'errore sconosciuto')}*\n\n"
+                    else:
+                        fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
+                else:
+                    fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
+                
+                fallback_response += (
+                    "**📐 Formule standard per il calcolo del carbonio:**\n\n"
+                    "1. **Formula base**: CO₂ = Biomassa × 0.47 × 3.67\n"
+                    "   - Biomassa: peso secco dell'albero in kg\n"
+                    "   - 0.47: frazione di carbonio nella biomassa\n"
+                    "   - 3.67: fattore di conversione C → CO₂\n\n"
+                    "2. **Formula allometrica**: Biomassa = a × DBH^b × H^c\n"
+                    "   - DBH: diametro a petto d'uomo (cm)\n"
+                    "   - H: altezza (m)\n"
+                    "   - a, b, c: coefficienti specie-specifici\n\n"
+                    "Posso calcolare il CO₂ per un albero specifico se mi dai DBH e altezza. Vuoi provare?\n\n"
+                    "Tool utilizzati: Paper Search Tool"
+                )
+                return {
+                    "messages": [AIMessage(content=fallback_response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": details,
+                    "tool_call_counts": tool_call_counts,
+                }
+            
+            # Otherwise, force replan
+            return {
+                "tool_loop_detected": True,
+                "tool_loop_action": "replan",
+                "tool_loop_details": details,
+                "tool_call_counts": tool_call_counts,
+            }
+        
+        # Also check for exact fingerprint repeats (same tool + same args)
+        guard = ToolLoopGuard(max_consecutive_repeats=2)
         last_fp = state.get("tool_last_fingerprint")
         repeat = int(state.get("tool_repeat_count") or 0)
 
         decision, new_fp, new_repeat = guard.evaluate(messages=messages, last_fingerprint=last_fp, repeat_count=repeat)
+        
         if decision.action == "stop" and decision.user_message:
             return {
                 "messages": [AIMessage(content=decision.user_message)],
@@ -306,6 +413,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 "tool_loop_detected": True,
                 "tool_loop_action": "stop",
                 "tool_loop_details": decision.details,
+                "tool_call_counts": tool_call_counts,
             }
         if decision.action == "replan":
             return {
@@ -314,6 +422,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 "tool_loop_detected": True,
                 "tool_loop_action": "replan",
                 "tool_loop_details": decision.details,
+                "tool_call_counts": tool_call_counts,
             }
         return {
             "tool_last_fingerprint": new_fp,
@@ -321,6 +430,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             "tool_loop_detected": False,
             "tool_loop_action": "continue",
             "tool_loop_details": None,
+            "tool_call_counts": tool_call_counts,
         }
 
     def _should_continue_after_tool_guard(self, state: AgentState) -> Literal["continue", "replan", "stop"]:
@@ -331,54 +441,105 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
 
     def _replan_after_tool_loop(self, state: AgentState) -> dict:
         """
-        Recover from repeated identical tool calls without stopping immediately.
-        We inject a SystemMessage that forces the agent to change strategy or ask a clarifying question.
+        Recover from repeated tool calls by asking the agent to self-reflect.
+        Uses progressively more assertive prompts.
         """
-        max_replans = 2
         current = int(state.get("tool_loop_replan_count") or 0)
         details: Dict[str, Any] = state.get("tool_loop_details") or {}
-
-        # If we've already tried replanning enough times, ask the user for clarification and stop.
-        if current >= max_replans:
-            fallback_user_msg = (
-                "Mi sto bloccando ripetendo la stessa chiamata tool senza fare progressi.\n\n"
-                "Per sbloccare la risposta, mi confermi cosa vuoi ottenere esattamente e con quali vincoli?\n"
-                "- Cosa intendi per risultato “corretto” in questo caso?\n"
-                "- Vuoi che io provi una strategia alternativa o che mi fermi e ti faccia domande mirate?\n\n"
-                "Tool utilizzati: Dataset Query Tool"
-            )
-            return {
-                "messages": [AIMessage(content=fallback_user_msg)],
-                "tool_loop_action": "stop",
-                "tool_loop_detected": True,
-                "tool_loop_replan_count": current,
-            }
-
         tool_calls = details.get("tool_calls") or []
-        last_sql = details.get("sql")
-        fingerprint = details.get("fingerprint")
+        abuse_detected = details.get("abuse_detected", False)
+        call_count = details.get("call_count", 0)
 
-        replanning_prompt = (
-            "You are recovering from a tool-call loop.\n"
-            "You must NOT repeat the exact same tool call with the same arguments again.\n\n"
-            "Context:\n"
-            f"- repeated_fingerprint: {fingerprint}\n"
-            f"- last_sql: {last_sql}\n"
-            f"- tool_calls: {json.dumps(tool_calls, ensure_ascii=False)}\n\n"
-            "Task:\n"
-            "1) Briefly explain (to yourself) why the repetition happened.\n"
-            "2) Decide ONE of the following next actions:\n"
-            "   A) Use a DIFFERENT tool, or\n"
-            "   B) Call the SAME tool but with meaningfully different arguments (broaden/narrow filters, change aggregation, change top-k), or\n"
-            "   C) Ask the user a single, specific clarification question.\n"
-            "3) Then proceed with that action.\n\n"
-            "Rules:\n"
-            "- Prefer action B if a small query change can resolve it.\n"
-            "- If the tool output already contains the answer, do NOT call tools again; answer directly.\n"
-        )
+        # Extract tool results from recent messages for self-evaluation
+        messages = state.get("messages") or []
+        from langchain_core.messages import ToolMessage
+        recent_tool_results = []
+        for msg in reversed(list(messages)[-15:]):  # Last 15 messages
+            if isinstance(msg, ToolMessage):
+                content = str(msg.content)[:400]  # Truncate for context
+                recent_tool_results.append(content)
+        
+        tool_results_summary = "\n---\n".join(recent_tool_results[:3]) if recent_tool_results else "Nessun risultato recente"
+        
+        # Get the abused tool name
+        abused_tool = tool_calls[0].get("name") if tool_calls else "questo tool"
+
+        # If tool abuse detected (same tool called many times with different args)
+        if abuse_detected or call_count >= 5:
+            prompt = f"""🛑 **STOP - HAI CHIAMATO `{abused_tool}` {call_count} VOLTE**
+
+Stai chiamando lo stesso tool ripetutamente con query diverse, ma non stai facendo progressi.
+
+**RISULTATI CHE HAI GIÀ OTTENUTO:**
+{tool_results_summary}
+
+**ANALIZZA LA SITUAZIONE:**
+- Hai già cercato {call_count} volte - se non hai trovato quello che cerchi, probabilmente non c'è
+- Guarda i risultati sopra: contengono informazioni utili?
+- Puoi rispondere con quello che hai, anche se parziale?
+
+**SCEGLI UNA DI QUESTE AZIONI (OBBLIGATORIO):**
+
+1. **RISPONDI CON QUELLO CHE HAI**: Usa i paper/risultati che hai trovato per dare una risposta. Esempio:
+   "Dai paper trovati su arXiv, le formule più comuni per l'assorbimento di carbonio sono:
+   - Formula 1: [descrivi]
+   - Formula 2: [descrivi]
+   Fonte: [link ai paper]"
+
+2. **AMMETTI I LIMITI E OFFRI ALTERNATIVE**: Se non hai trovato esattamente quello che l'utente cerca:
+   "Non ho trovato formule specifiche sull'assorbimento di carbonio su arXiv per la tua query.
+   Posso però aiutarti con:
+   - Le formule di calcolo CO2 che ho già implementate (basate su DBH e altezza)
+   - Il calcolo della biomassa con equazioni allometriche
+   Vuoi che ti mostri queste?"
+
+3. **CHIEDI CHIARIMENTI**: Se hai bisogno di più contesto:
+   "Per aiutarti meglio, puoi specificare:
+   - Stai cercando formule per alberi, foreste, o ecosistemi?
+   - Hai un paper specifico in mente?"
+
+**⛔ NON PUOI chiamare di nuovo `{abused_tool}`. Devi rispondere ora.**
+"""
+        # Progressive assertiveness for exact fingerprint repeats
+        elif current < 2:
+            prompt = f"""🔄 **MOMENTO DI AUTO-RIFLESSIONE**
+
+Hai chiamato lo stesso tool più volte. Prima di procedere, chiediti:
+
+**Risultati ottenuti finora:**
+{tool_results_summary}
+
+**Domande da porti:**
+1. Questi risultati rispondono (anche parzialmente) alla domanda dell'utente?
+2. Sto cercando qualcosa che potrebbe non esistere nei dati disponibili?
+3. Posso dare una risposta utile con quello che ho?
+
+**Azioni possibili:**
+A) **RISPONDO**: Formula una risposta con ciò che hai trovato (anche se parziale)
+B) **CHIEDO**: Fai una domanda specifica all'utente per capire meglio
+C) **CAMBIO STRATEGIA**: Usa un tool diverso
+
+NON richiamare lo stesso tool con la stessa query.
+"""
+        else:
+            prompt = f"""🛑 **STOP - RISPOSTA OBBLIGATORIA**
+
+Hai tentato {current + 1} volte senza successo. È il momento di rispondere all'utente.
+
+**Risultati disponibili:**
+{tool_results_summary}
+
+**ISTRUZIONI FINALI:**
+Scrivi ORA una risposta all'utente che:
+1. Spiega onestamente cosa hai cercato e cosa hai (o non hai) trovato
+2. Offre alternative concrete: "Non ho trovato X, ma posso aiutarti con Y..."
+3. Chiede se l'utente vuole procedere diversamente
+
+**RISPONDI ORA - Non chiamare altri tool.**
+"""
 
         return {
-            "messages": [SystemMessage(content=replanning_prompt)],
+            "messages": [SystemMessage(content=prompt)],
             "tool_loop_action": "continue",
             "tool_loop_detected": False,
             "tool_loop_replan_count": current + 1,
@@ -387,6 +548,98 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
     def _increment_retry_count(self, state: AgentState) -> dict:
         current = int(state.get("retry_count") or 0)
         return {"retry_count": current + 1}
+
+    def _extract_papers_from_messages(self, messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract paper results from ToolMessages for search_scientific_papers."""
+        from langchain_core.messages import ToolMessage
+        import ast
+        import re
+        
+        papers = []
+        errors = []
+        seen_titles = set()  # Avoid duplicates
+        
+        for msg in messages:
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            content_str = str(content)
+            
+            # Try to parse the content as JSON or Python dict
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    # Try JSON first
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Try Python literal (handles single quotes)
+                        try:
+                            # Replace single quotes with double quotes for JSON parsing
+                            # Be careful with nested quotes
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # If parsing succeeded and we have papers
+            if isinstance(parsed, dict) and "papers" in parsed:
+                for paper in parsed.get("papers", []):
+                    if not isinstance(paper, dict):
+                        continue
+                    
+                    # Skip error entries
+                    if "error" in paper:
+                        errors.append(paper.get("error", "Unknown error"))
+                        continue
+                    
+                    title = paper.get("title", "") or paper.get("Title", "")
+                    if title and title != "N/A" and title not in seen_titles:
+                        seen_titles.add(title)
+                        papers.append({
+                            "title": title,
+                            "authors": paper.get("authors", "") or paper.get("Authors", ""),
+                            "abstract": paper.get("abstract", "") or paper.get("Abstract", ""),
+                            "link": paper.get("link", "") or paper.get("Link", ""),
+                            "source": paper.get("source", "arxiv"),
+                        })
+                
+                # Also check for errors array
+                if "errors" in parsed and parsed["errors"]:
+                    for err in parsed["errors"]:
+                        if isinstance(err, dict) and "error" in err:
+                            errors.append(err["error"])
+            
+            # Fallback: try to extract from raw text if parsing failed
+            elif "arxiv" in content_str.lower() or "title" in content_str.lower():
+                # Try to find title patterns in raw text
+                title_matches = re.findall(r"['\"]title['\"]:\s*['\"]([^'\"]+)['\"]", content_str, re.IGNORECASE)
+                link_matches = re.findall(r"https?://arxiv\.org/abs/[\w\.]+", content_str)
+                
+                for i, title in enumerate(title_matches):
+                    if title and title != "N/A" and title not in seen_titles:
+                        seen_titles.add(title)
+                        link = link_matches[i] if i < len(link_matches) else ""
+                        papers.append({
+                            "title": title,
+                            "authors": "",
+                            "abstract": "",
+                            "link": link,
+                            "source": "arxiv",
+                        })
+        
+        # If we have errors but no papers, include error info
+        if not papers and errors:
+            return [{"title": "Errore nella ricerca", "abstract": "; ".join(set(errors[:3])), "link": "", "authors": "", "source": "error"}]
+        
+        return papers
 
     def _get_dataset_tool(self) -> Optional[DatasetQueryTool]:
         for tool in self._tools:
@@ -775,6 +1028,7 @@ Task da completare:
 5. **Map Generation Tool**: Create interactive maps showing tree locations (markers, clusters, heatmaps). ONLY available for Milano dataset which has GPS coordinates.
 6. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
 7. **Species List Query Tool**: Query a plant species list (taxonomy + traits) to provide botanical context (family/order/class, growth form, leaf type, etc.).
+8. **Paper Search Tool**: Search arXiv and PubMed for scientific papers. Returns title, authors, abstract, and link to each paper.
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
@@ -783,6 +1037,7 @@ Guidelines:
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
 - When users ask to show trees on a MAP, visualize distribution geographically, or create a map, use the map generation tool. NOTE: Maps are ONLY available for the Milano dataset (has GPS coordinates). Vienna dataset does NOT have coordinates.
 - Use specific biomass/volume tools when the user asks for those specific equations (Heyer, Leaf Biomass, etc.).
+- When users ask about scientific research, publications, papers, or literature, use the paper search tool. ALWAYS include the paper links in your response.
 - Always provide clear, helpful responses in Italian.
 - If you need more information, ask the user.
 - When using tools, explain the results in a user-friendly way.
@@ -1128,6 +1383,8 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                 "tool_loop_action": "continue",
                 "tool_loop_details": None,
                 "tool_loop_replan_count": 0,
+                "total_tool_calls": 0,
+                "tool_call_counts": {},
             },
             config={"recursion_limit": 80},
         )
@@ -1181,6 +1438,8 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                 "tool_loop_action": "continue",
                 "tool_loop_details": None,
                 "tool_loop_replan_count": 0,
+                "total_tool_calls": 0,
+                "tool_call_counts": {},
             },
             config={"recursion_limit": 80},
             stream_mode="updates",
@@ -1208,9 +1467,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                         reasoning = f"🔍 **Ottimizzazione Query**\n\n"
                         reasoning += f"Query ottimizzata: *{optimized}*\n\n"
                         if tasks:
-                            reasoning += "**Task identificati:**\n"
-                            for i, task in enumerate(tasks, 1):
-                                reasoning += f"{i}. {task}\n"
+                            reasoning += "**Task identificati:**\n\n"
+                            reasoning += "<ol>\n"
+                            for task in tasks:
+                                reasoning += f"<li>{task}</li>\n"
+                            reasoning += "</ol>\n\n"
                         yield {"type": "reasoning", "content": reasoning}
                 
                 elif node_name == "agent":
@@ -1314,10 +1575,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     if "results" in result_data:
                                         results = result_data.get("results", [])
                                         if results and len(results) > 0:
-                                            reasoning += f"**Primi risultati:**\n"
+                                            reasoning += f"**Primi risultati:**\n\n"
+                                            reasoning += "<ol>\n"
                                             # Show first 3 results as preview
-                                            for i, row in enumerate(results[:3], 1):
-                                                reasoning += f"{i}. "
+                                            for row in results[:3]:
+                                                reasoning += "<li>"
                                                 # Show main fields
                                                 if "genus_species" in row:
                                                     reasoning += f"Specie: {row['genus_species']} "
@@ -1327,7 +1589,8 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                                     reasoning += f"Distretto: {row['district']} "
                                                 if "trunk_circumference" in row:
                                                     reasoning += f"Circonferenza: {row['trunk_circumference']}cm "
-                                                reasoning += "\n"
+                                                reasoning += "</li>\n"
+                                            reasoning += "</ol>\n"
                                             
                                             if len(results) > 3:
                                                 reasoning += f"... e altri {len(results) - 3} risultati\n"

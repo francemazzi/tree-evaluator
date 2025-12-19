@@ -264,7 +264,7 @@ class ChatService:
                 import traceback
                 traceback.print_exc()
 
-                fallback_text = self._format_llm_error_for_user(preferences, e)
+                fallback_text = self._format_llm_error_for_user(preferences, e, last_user_message)
                 yield {"type": "response", "content": fallback_text}
                 
                 reply = ChatMessage.new(
@@ -290,7 +290,7 @@ class ChatService:
             self._repository.add_message(reply)
             return reply
 
-    def _format_llm_error_for_user(self, preferences: UserLlmSettings, error: Exception) -> str:
+    def _format_llm_error_for_user(self, preferences: UserLlmSettings, error: Exception, last_user_message: Optional[str] = None) -> str:
         """User-facing error message with actionable hints (only when needed)."""
         err = str(error)
 
@@ -319,7 +319,8 @@ class ChatService:
             )
 
         timestamp = datetime.utcnow().strftime("%H:%M:%S")
-        return f"Echo ({timestamp}): {last_user_message} [fallback - {err}]"
+        user_msg = last_user_message if last_user_message else "messaggio utente"
+        return f"Echo ({timestamp}): {user_msg} [fallback - {err}]"
 
     def send_and_reply(self, user_id: str, conversation_id: int, user_content: str, openai_api_key: Optional[str] = None) -> Tuple[ChatMessage, ChatMessage]:
         """Send a message and get a reply (with optional OpenAI API key)."""
