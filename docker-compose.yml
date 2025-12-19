@@ -1,5 +1,21 @@
 version: "3.9"
 services:
+  # Optional: run Ollama inside Docker (disabled by default).
+  # Enable with: docker compose --profile with-ollama up
+  ollama:
+    profiles: ["with-ollama"]
+    image: ollama/ollama:latest
+    container_name: tree-evaluator-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   api:
     build: .
     container_name: tree-evaluator-api
@@ -28,6 +44,14 @@ services:
     environment:
       - PYTHONPATH=/app
       - CHAT_DB_PATH=/app/data/chat_index.db
+      # LLM provider selection: openai | ollama
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      # Ollama settings (used when LLM_PROVIDER=ollama)
+      # Default points to host Ollama (Docker Desktop): http://host.docker.internal:11434
+      # If you enable the ollama service profile, set OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_CHAT_MODEL=${OLLAMA_CHAT_MODEL:-qwen2.5:7b-instruct}
+      - OLLAMA_EMBEDDING_MODEL=${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
       # OpenAI API Key (opzionale, può essere inserita dall'UI)
       # - OPENAI_API_KEY=${OPENAI_API_KEY}
     env_file:
@@ -36,4 +60,6 @@ services:
 
 volumes:
   chat_data:
+    driver: local
+  ollama:
     driver: local

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from streamlit_app.models import ChatMessage, Conversation
+from streamlit_app.models import ChatMessage, Conversation, UserLlmSettings
 from streamlit_app.repository import ChatRepository
 
 
@@ -48,12 +48,42 @@ class ChatService:
     
     def save_user_api_key(self, user_id: str, api_key: str) -> None:
         """Save user's OpenAI API key."""
-        self._repository.save_user_settings(user_id, api_key)
+        # Keep backward compatibility: only updating key, preserving existing provider/models.
+        current = self.get_user_llm_settings(user_id)
+        updated = current
+        updated.openai_api_key = api_key
+        self.save_user_llm_settings(updated)
     
     def get_user_api_key(self, user_id: str) -> Optional[str]:
         """Get user's saved OpenAI API key."""
         settings = self._repository.get_user_settings(user_id)
         return settings.get("openai_api_key") if settings else None
+
+    def get_user_llm_settings(self, user_id: str) -> UserLlmSettings:
+        raw = self._repository.get_user_settings(user_id) or {}
+        defaults = UserLlmSettings.default(user_id)
+        return UserLlmSettings(
+            user_id=user_id,
+            provider=str(raw.get("llm_provider") or defaults.provider),
+            openai_api_key=str(raw.get("openai_api_key") or defaults.openai_api_key),
+            openai_chat_model=str(raw.get("openai_chat_model") or defaults.openai_chat_model),
+            openai_embedding_model=str(raw.get("openai_embedding_model") or defaults.openai_embedding_model),
+            ollama_base_url=str(raw.get("ollama_base_url") or defaults.ollama_base_url),
+            ollama_chat_model=str(raw.get("ollama_chat_model") or defaults.ollama_chat_model),
+            ollama_embedding_model=str(raw.get("ollama_embedding_model") or defaults.ollama_embedding_model),
+        )
+
+    def save_user_llm_settings(self, settings: UserLlmSettings) -> None:
+        self._repository.save_user_settings(
+            user_id=settings.user_id,
+            openai_api_key=settings.openai_api_key,
+            llm_provider=settings.provider,
+            openai_chat_model=settings.openai_chat_model,
+            openai_embedding_model=settings.openai_embedding_model,
+            ollama_base_url=settings.ollama_base_url,
+            ollama_chat_model=settings.ollama_chat_model,
+            ollama_embedding_model=settings.ollama_embedding_model,
+        )
 
     # Message management
     
@@ -67,10 +97,14 @@ class ChatService:
         self._repository.add_message(message)
         return message
 
-    def _get_or_create_agent(self, openai_api_key: Optional[str] = None):
-        """Lazy-load the LangGraph agent with optional API key."""
-        # Se non c'è API key, ritorna None subito
-        if not openai_api_key:
+    def _get_or_create_agent(self, user_id: str, openai_api_key: Optional[str] = None):
+        """Lazy-load the LangGraph agent using saved per-user preferences (OpenAI/Ollama)."""
+        preferences = self.get_user_llm_settings(user_id)
+        # If UI passed a key explicitly, it overrides persisted key.
+        if openai_api_key is not None:
+            preferences.openai_api_key = openai_api_key
+
+        if preferences.provider == "openai" and not preferences.openai_api_key:
             return None
             
         # Se agent già esiste, ritorna quello esistente
@@ -93,7 +127,13 @@ class ChatService:
             if custom_db_path and custom_table_name:
                 # Custom uploaded CSV
                 self._agent = TreeEvaluatorAgent(
-                    openai_api_key=openai_api_key,
+                    openai_api_key=preferences.openai_api_key or None,
+                    provider=preferences.provider,
+                    openai_chat_model=preferences.openai_chat_model,
+                    openai_embedding_model=preferences.openai_embedding_model,
+                    ollama_base_url=preferences.ollama_base_url,
+                    ollama_chat_model=preferences.ollama_chat_model,
+                    ollama_embedding_model=preferences.ollama_embedding_model,
                     custom_db_path=Path(custom_db_path),
                     custom_table_name=custom_table_name,
                     data_description=data_description
@@ -101,12 +141,26 @@ class ChatService:
             elif selected_preset == "milano":
                 # Milano preset dataset
                 self._agent = TreeEvaluatorAgent(
-                    openai_api_key=openai_api_key,
+                    openai_api_key=preferences.openai_api_key or None,
+                    provider=preferences.provider,
+                    openai_chat_model=preferences.openai_chat_model,
+                    openai_embedding_model=preferences.openai_embedding_model,
+                    ollama_base_url=preferences.ollama_base_url,
+                    ollama_chat_model=preferences.ollama_chat_model,
+                    ollama_embedding_model=preferences.ollama_embedding_model,
                     dataset_preset="milano"
                 )
             else:
                 # Default: Vienna dataset
-                self._agent = TreeEvaluatorAgent(openai_api_key=openai_api_key)
+                self._agent = TreeEvaluatorAgent(
+                    openai_api_key=preferences.openai_api_key or None,
+                    provider=preferences.provider,
+                    openai_chat_model=preferences.openai_chat_model,
+                    openai_embedding_model=preferences.openai_embedding_model,
+                    ollama_base_url=preferences.ollama_base_url,
+                    ollama_chat_model=preferences.ollama_chat_model,
+                    ollama_embedding_model=preferences.ollama_embedding_model,
+                )
             
             return self._agent
             
@@ -131,7 +185,7 @@ class ChatService:
     def _generate_fake_reply(self, user_id: str, conversation_id: int, last_user_message: str, openai_api_key: Optional[str] = None) -> ChatMessage:
         """Generate reply using LangGraph agent or fallback to demo response."""
         # Try to use agent with provided API key
-        agent = self._get_or_create_agent(openai_api_key=openai_api_key)
+        agent = self._get_or_create_agent(user_id=user_id, openai_api_key=openai_api_key)
         
         if agent is not None:
             try:
@@ -174,7 +228,8 @@ class ChatService:
         
         Returns the complete message at the end for persistence.
         """
-        agent = self._get_or_create_agent(openai_api_key=openai_api_key)
+        agent = self._get_or_create_agent(user_id=user_id, openai_api_key=openai_api_key)
+        preferences = self.get_user_llm_settings(user_id)
         
         if agent is not None:
             try:
@@ -208,9 +263,8 @@ class ChatService:
                 print(f"Warning: Agent streaming failed: {e}")
                 import traceback
                 traceback.print_exc()
-                # Fallback
-                timestamp = datetime.utcnow().strftime("%H:%M:%S")
-                fallback_text = f"Echo ({timestamp}): {last_user_message} [fallback - {str(e)}]"
+
+                fallback_text = self._format_llm_error_for_user(preferences, e, last_user_message)
                 yield {"type": "response", "content": fallback_text}
                 
                 reply = ChatMessage.new(
@@ -235,6 +289,38 @@ class ChatService:
             )
             self._repository.add_message(reply)
             return reply
+
+    def _format_llm_error_for_user(self, preferences: UserLlmSettings, error: Exception, last_user_message: Optional[str] = None) -> str:
+        """User-facing error message with actionable hints (only when needed)."""
+        err = str(error)
+
+        if preferences.provider == "ollama":
+            import re
+
+            # Common Ollama error pattern: model 'xxx' not found (status code: 404)
+            m = re.search(r"model\s+'([^']+)'\s+not\s+found", err, flags=re.IGNORECASE)
+            model_name = m.group(1) if m else None
+            if model_name:
+                return (
+                    f"❌ Modello Ollama **{model_name}** non trovato (404).\n\n"
+                    f"Esegui sul tuo host:\n"
+                    f"```bash\nollama pull {model_name}\n```\n"
+                    f"Poi in Settings → **Aggiorna modelli** e selezionalo.\n\n"
+                    f"Se non hai ancora modelli:\n"
+                    f"```bash\nollama pull nomic-embed-text\nollama pull gpt-oss:20b\n```"
+                )
+
+            # Generic Ollama hint (no templates unless error actually happens)
+            return (
+                "❌ Errore durante la chiamata a Ollama.\n\n"
+                "Controlla che Ollama sia avviato e che il base URL sia corretto.\n\n"
+                "Se ti mancano modelli:\n"
+                "```bash\nollama pull nomic-embed-text\nollama pull gpt-oss:20b\n```"
+            )
+
+        timestamp = datetime.utcnow().strftime("%H:%M:%S")
+        user_msg = last_user_message if last_user_message else "messaggio utente"
+        return f"Echo ({timestamp}): {user_msg} [fallback - {err}]"
 
     def send_and_reply(self, user_id: str, conversation_id: int, user_content: str, openai_api_key: Optional[str] = None) -> Tuple[ChatMessage, ChatMessage]:
         """Send a message and get a reply (with optional OpenAI API key)."""

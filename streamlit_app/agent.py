@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated, List, Literal, Optional, Sequence, TypedDict
+from typing import Annotated, List, Literal, Optional, Sequence, TypedDict, Any, Dict
 from pathlib import Path
 import re
 from decimal import Decimal, InvalidOperation
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_core.vectorstores import InMemoryVectorStore
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
+from streamlit_app.llm.factory import LlmFactory, LlmProvider, LlmSettings, LlmSettingsReader
+from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
@@ -30,6 +32,8 @@ from streamlit_app.tools.stem_biomass_tool import StemBiomassTool
 from streamlit_app.tools.root_biomass_tool import RootBiomassTool
 from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
 from streamlit_app.tools.map_tool import MapGenerationTool
+from streamlit_app.tools.species_list_tool import SpeciesListQueryTool
+from streamlit_app.tools.paper_search_tool import PaperSearchTool
 
 # Load environment variables
 load_dotenv()
@@ -45,6 +49,15 @@ class AgentState(TypedDict):
     context_summary: Optional[str]  # Summary of important context
     message_count: Optional[int]  # Track conversation length
     chart_data: Optional[dict]  # Store chart data when chart tool is called
+    retry_count: Optional[int]  # Number of validator retries attempted in this run
+    tool_last_fingerprint: Optional[str]  # Last tool-call fingerprint (for loop detection)
+    tool_repeat_count: Optional[int]  # Consecutive repeats of the same fingerprint
+    tool_loop_detected: Optional[bool]  # True if loop guard stops the graph
+    tool_loop_action: Optional[Literal["continue", "replan", "stop"]]  # Next step after tool loop guard
+    tool_loop_details: Optional[dict]  # Details about repeated tool calls / last SQL, etc.
+    tool_loop_replan_count: Optional[int]  # Number of replans attempted after loop detection
+    total_tool_calls: Optional[int]  # Total number of tool calls in this run (for global limit)
+    tool_call_counts: Optional[Dict[str, int]]  # Count of calls per tool name (for detecting repeated tool abuse)
 
 
 class TreeEvaluatorAgent:
@@ -91,6 +104,12 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
     def __init__(
         self, 
         openai_api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        openai_chat_model: Optional[str] = None,
+        openai_embedding_model: Optional[str] = None,
+        ollama_base_url: Optional[str] = None,
+        ollama_chat_model: Optional[str] = None,
+        ollama_embedding_model: Optional[str] = None,
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
         data_description: str = "",
@@ -105,19 +124,30 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
         """
-        # Get API key - prioritize parameter, then env var
-        api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "OpenAI API key not found. Provide it via UI Settings or set OPENAI_API_KEY environment variable."
-            )
-
-        # Initialize LLM (used by tools for text-to-SQL translation)
-        self._base_llm = ChatOpenAI(
-            model="gpt-5",
-            temperature=1,  # Lower temperature for higher determinism and exact phrasing
-            api_key=api_key,
+        # LLM provider settings (OpenAI/Ollama)
+        self._llm_settings: LlmSettings = LlmSettingsReader().read(
+            openai_api_key_override=openai_api_key,
+            provider_override=provider,
+            openai_chat_model_override=openai_chat_model,
+            openai_embedding_model_override=openai_embedding_model,
+            ollama_base_url_override=ollama_base_url,
+            ollama_chat_model_override=ollama_chat_model,
+            ollama_embedding_model_override=ollama_embedding_model,
         )
+        self._llm_factory = LlmFactory(self._llm_settings)
+        self._llm_factory.validate()
+
+        # Initialize LLMs (primary + fallback)
+        if self._llm_settings.provider == LlmProvider.OLLAMA:
+            self._primary_model = self._llm_settings.ollama_chat_model
+            self._fallback_model = (self._llm_settings.ollama_fallback_model or "").strip() or self._llm_settings.ollama_chat_model
+        else:
+            self._primary_model = self._llm_settings.openai_chat_model
+            self._fallback_model = self._llm_settings.openai_fallback_model
+
+        self._base_llm = self._llm_factory.create_chat_model()
+        self._fallback_llm = self._llm_factory.create_fallback_chat_model()
+        self._embeddings = self._llm_factory.create_embeddings()
 
         # Initialize DatasetQueryTool with appropriate database
         if custom_db_path and custom_table_name:
@@ -126,7 +156,9 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 db_path=custom_db_path,
                 table_name=custom_table_name,
                 user_description=data_description,
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
             )
         elif dataset_preset in self.DATASET_PRESETS:
             # Preset dataset (Vienna or Milano)
@@ -136,11 +168,27 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                 db_path=db_path,
                 table_name=preset["table_name"],
                 user_description=preset["description"],
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
             )
         else:
             # Default: Vienna
-            dataset_tool = DatasetQueryTool(llm=self._base_llm)
+            dataset_tool = DatasetQueryTool(
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+                embeddings=self._embeddings,
+            )
+
+        # Initialize SpeciesListQueryTool (botanical taxonomy/traits context)
+        species_list_db_path = Path(__file__).parent.parent / "dataset" / "species_list.db"
+        species_list_tool = SpeciesListQueryTool(
+            db_path=species_list_db_path,
+            table_name="species_list",
+            llm=self._base_llm,
+            fallback_llm=self._fallback_llm,
+            embeddings=self._embeddings,
+        )
         
         # Initialize tools with LLM
         # Initialize MapGenerationTool with appropriate database for dataset preset
@@ -149,20 +197,22 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             map_tool = MapGenerationTool(
                 db_path=custom_db_path,
                 table_name=custom_table_name,
-                llm=self._base_llm
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
             )
         elif dataset_preset == "milano":
             # Milano has GPS coordinates
-            map_tool = MapGenerationTool(llm=self._base_llm)
+            map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
         else:
             # Vienna doesn't have GPS - still create tool but it will show error message
-            map_tool = MapGenerationTool(llm=self._base_llm)
+            map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
         
         self._tools = [
             CO2CalculationTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
-            ChartGenerationTool(llm=self._base_llm),
+            species_list_tool,
+            ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm),
             map_tool,
             HeyerVolumeTool(),
             GeneralVolumeTool(),
@@ -175,6 +225,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             StemBiomassTool(),
             RootBiomassTool(),
             TotalBiomassTool(),
+            PaperSearchTool(),
         ]
 
         # Initialize LLM with tools bound
@@ -192,7 +243,10 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         workflow.add_node("query_optimizer", self._optimize_query)
         workflow.add_node("agent", self._call_model)
         workflow.add_node("tools", ToolNode(self._tools))
+        workflow.add_node("tool_loop_guard", self._guard_tool_loop)
+        workflow.add_node("tool_loop_replanner", self._replan_after_tool_loop)
         workflow.add_node("validator", self._validate_response)
+        workflow.add_node("retry_counter", self._increment_retry_count)
 
         # Set entry point - start with context management
         workflow.set_entry_point("context_manager")
@@ -213,8 +267,18 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             },
         )
 
-        # After tool execution, return to agent
-        workflow.add_edge("tools", "agent")
+        # After tool execution, run loop guard before returning to agent
+        workflow.add_edge("tools", "tool_loop_guard")
+        workflow.add_conditional_edges(
+            "tool_loop_guard",
+            self._should_continue_after_tool_guard,
+            {
+                "continue": "agent",
+                "replan": "tool_loop_replanner",
+                "stop": END,
+            },
+        )
+        workflow.add_edge("tool_loop_replanner", "agent")
 
         # Validator decides: complete or retry
         workflow.add_conditional_edges(
@@ -222,11 +286,360 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             self._should_retry,
             {
                 "complete": END,
-                "retry": "agent",
+                "retry": "retry_counter",
             },
         )
 
+        # After incrementing retry counter, go back to agent
+        workflow.add_edge("retry_counter", "agent")
+
         return workflow.compile()
+
+    def _guard_tool_loop(self, state: AgentState) -> dict:
+        messages = state.get("messages") or []
+        from langchain_core.messages import ToolMessage
+        
+        # Count ALL ToolMessages in the conversation by tool name
+        # This is the definitive count - each ToolMessage = one tool execution
+        tool_call_counts: Dict[str, int] = {}
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                # ToolMessage has a 'name' attribute with the tool name
+                tool_name = getattr(msg, "name", None)
+                if tool_name:
+                    tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+        
+        # Check if any single tool has been called too many times (even with different args)
+        MAX_CALLS_PER_TOOL = 5  # If same tool called 5+ times, force replan
+        abused_tool = None
+        for tool_name, count in tool_call_counts.items():
+            if count >= MAX_CALLS_PER_TOOL:
+                abused_tool = tool_name
+                break
+        
+        if abused_tool:
+            call_count = tool_call_counts[abused_tool]
+            replan_count = int(state.get("tool_loop_replan_count") or 0)
+            
+            details = {
+                "tool_calls": [{"name": abused_tool}],
+                "fingerprint": f"{abused_tool}:repeated_{call_count}_times",
+                "abuse_detected": True,
+                "call_count": call_count,
+            }
+            
+            # If tool called 10+ times OR we've already tried 3+ replans, FORCE STOP
+            if call_count >= 10 or replan_count >= 3:
+                # Extract papers found from ToolMessages
+                papers_found = self._extract_papers_from_messages(messages)
+                
+                # Build response with sources
+                fallback_response = (
+                    f"Ho cercato su arXiv informazioni sulla formula per l'assorbimento del carbonio. "
+                    f"Ecco cosa ho trovato dopo {call_count} ricerche:\n\n"
+                )
+                
+                if papers_found:
+                    # Check if we have actual papers or just errors
+                    real_papers = [p for p in papers_found if p.get("source") != "error"]
+                    error_papers = [p for p in papers_found if p.get("source") == "error"]
+                    
+                    if real_papers:
+                        fallback_response += "**📚 Paper trovati su arXiv:**\n\n"
+                        for i, paper in enumerate(real_papers[:5], 1):  # Max 5 papers
+                            title = paper.get("title", "Titolo non disponibile")
+                            authors = paper.get("authors", "Autori non disponibili")
+                            link = paper.get("link", "")
+                            abstract = paper.get("abstract", "")
+                            if abstract and len(abstract) > 200:
+                                abstract = abstract[:200] + "..."
+                            
+                            fallback_response += f"{i}. **{title}**\n"
+                            if authors and authors != "N/A":
+                                fallback_response += f"   - Autori: {authors}\n"
+                            if abstract:
+                                fallback_response += f"   - Abstract: {abstract}\n"
+                            if link:
+                                fallback_response += f"   - 🔗 [Link al paper]({link})\n"
+                            fallback_response += "\n"
+                    elif error_papers:
+                        fallback_response += f"*⚠️ Errore durante la ricerca su arXiv: {error_papers[0].get('abstract', 'errore sconosciuto')}*\n\n"
+                    else:
+                        fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
+                else:
+                    fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
+                
+                fallback_response += (
+                    "**📐 Formule standard per il calcolo del carbonio:**\n\n"
+                    "1. **Formula base**: CO₂ = Biomassa × 0.47 × 3.67\n"
+                    "   - Biomassa: peso secco dell'albero in kg\n"
+                    "   - 0.47: frazione di carbonio nella biomassa\n"
+                    "   - 3.67: fattore di conversione C → CO₂\n\n"
+                    "2. **Formula allometrica**: Biomassa = a × DBH^b × H^c\n"
+                    "   - DBH: diametro a petto d'uomo (cm)\n"
+                    "   - H: altezza (m)\n"
+                    "   - a, b, c: coefficienti specie-specifici\n\n"
+                    "Posso calcolare il CO₂ per un albero specifico se mi dai DBH e altezza. Vuoi provare?\n\n"
+                    "Tool utilizzati: Paper Search Tool"
+                )
+                return {
+                    "messages": [AIMessage(content=fallback_response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": details,
+                    "tool_call_counts": tool_call_counts,
+                }
+            
+            # Otherwise, force replan
+            return {
+                "tool_loop_detected": True,
+                "tool_loop_action": "replan",
+                "tool_loop_details": details,
+                "tool_call_counts": tool_call_counts,
+            }
+        
+        # Also check for exact fingerprint repeats (same tool + same args)
+        guard = ToolLoopGuard(max_consecutive_repeats=2)
+        last_fp = state.get("tool_last_fingerprint")
+        repeat = int(state.get("tool_repeat_count") or 0)
+
+        decision, new_fp, new_repeat = guard.evaluate(messages=messages, last_fingerprint=last_fp, repeat_count=repeat)
+        
+        if decision.action == "stop" and decision.user_message:
+            return {
+                "messages": [AIMessage(content=decision.user_message)],
+                "tool_last_fingerprint": new_fp,
+                "tool_repeat_count": new_repeat,
+                "tool_loop_detected": True,
+                "tool_loop_action": "stop",
+                "tool_loop_details": decision.details,
+                "tool_call_counts": tool_call_counts,
+            }
+        if decision.action == "replan":
+            return {
+                "tool_last_fingerprint": new_fp,
+                "tool_repeat_count": new_repeat,
+                "tool_loop_detected": True,
+                "tool_loop_action": "replan",
+                "tool_loop_details": decision.details,
+                "tool_call_counts": tool_call_counts,
+            }
+        return {
+            "tool_last_fingerprint": new_fp,
+            "tool_repeat_count": new_repeat,
+            "tool_loop_detected": False,
+            "tool_loop_action": "continue",
+            "tool_loop_details": None,
+            "tool_call_counts": tool_call_counts,
+        }
+
+    def _should_continue_after_tool_guard(self, state: AgentState) -> Literal["continue", "replan", "stop"]:
+        action = state.get("tool_loop_action") or "continue"
+        if action in ("continue", "replan", "stop"):
+            return action
+        return "continue"
+
+    def _replan_after_tool_loop(self, state: AgentState) -> dict:
+        """
+        Recover from repeated tool calls by asking the agent to self-reflect.
+        Uses progressively more assertive prompts.
+        """
+        current = int(state.get("tool_loop_replan_count") or 0)
+        details: Dict[str, Any] = state.get("tool_loop_details") or {}
+        tool_calls = details.get("tool_calls") or []
+        abuse_detected = details.get("abuse_detected", False)
+        call_count = details.get("call_count", 0)
+
+        # Extract tool results from recent messages for self-evaluation
+        messages = state.get("messages") or []
+        from langchain_core.messages import ToolMessage
+        recent_tool_results = []
+        for msg in reversed(list(messages)[-15:]):  # Last 15 messages
+            if isinstance(msg, ToolMessage):
+                content = str(msg.content)[:400]  # Truncate for context
+                recent_tool_results.append(content)
+        
+        tool_results_summary = "\n---\n".join(recent_tool_results[:3]) if recent_tool_results else "Nessun risultato recente"
+        
+        # Get the abused tool name
+        abused_tool = tool_calls[0].get("name") if tool_calls else "questo tool"
+
+        # If tool abuse detected (same tool called many times with different args)
+        if abuse_detected or call_count >= 5:
+            prompt = f"""🛑 **STOP - HAI CHIAMATO `{abused_tool}` {call_count} VOLTE**
+
+Stai chiamando lo stesso tool ripetutamente con query diverse, ma non stai facendo progressi.
+
+**RISULTATI CHE HAI GIÀ OTTENUTO:**
+{tool_results_summary}
+
+**ANALIZZA LA SITUAZIONE:**
+- Hai già cercato {call_count} volte - se non hai trovato quello che cerchi, probabilmente non c'è
+- Guarda i risultati sopra: contengono informazioni utili?
+- Puoi rispondere con quello che hai, anche se parziale?
+
+**SCEGLI UNA DI QUESTE AZIONI (OBBLIGATORIO):**
+
+1. **RISPONDI CON QUELLO CHE HAI**: Usa i paper/risultati che hai trovato per dare una risposta. Esempio:
+   "Dai paper trovati su arXiv, le formule più comuni per l'assorbimento di carbonio sono:
+   - Formula 1: [descrivi]
+   - Formula 2: [descrivi]
+   Fonte: [link ai paper]"
+
+2. **AMMETTI I LIMITI E OFFRI ALTERNATIVE**: Se non hai trovato esattamente quello che l'utente cerca:
+   "Non ho trovato formule specifiche sull'assorbimento di carbonio su arXiv per la tua query.
+   Posso però aiutarti con:
+   - Le formule di calcolo CO2 che ho già implementate (basate su DBH e altezza)
+   - Il calcolo della biomassa con equazioni allometriche
+   Vuoi che ti mostri queste?"
+
+3. **CHIEDI CHIARIMENTI**: Se hai bisogno di più contesto:
+   "Per aiutarti meglio, puoi specificare:
+   - Stai cercando formule per alberi, foreste, o ecosistemi?
+   - Hai un paper specifico in mente?"
+
+**⛔ NON PUOI chiamare di nuovo `{abused_tool}`. Devi rispondere ora.**
+"""
+        # Progressive assertiveness for exact fingerprint repeats
+        elif current < 2:
+            prompt = f"""🔄 **MOMENTO DI AUTO-RIFLESSIONE**
+
+Hai chiamato lo stesso tool più volte. Prima di procedere, chiediti:
+
+**Risultati ottenuti finora:**
+{tool_results_summary}
+
+**Domande da porti:**
+1. Questi risultati rispondono (anche parzialmente) alla domanda dell'utente?
+2. Sto cercando qualcosa che potrebbe non esistere nei dati disponibili?
+3. Posso dare una risposta utile con quello che ho?
+
+**Azioni possibili:**
+A) **RISPONDO**: Formula una risposta con ciò che hai trovato (anche se parziale)
+B) **CHIEDO**: Fai una domanda specifica all'utente per capire meglio
+C) **CAMBIO STRATEGIA**: Usa un tool diverso
+
+NON richiamare lo stesso tool con la stessa query.
+"""
+        else:
+            prompt = f"""🛑 **STOP - RISPOSTA OBBLIGATORIA**
+
+Hai tentato {current + 1} volte senza successo. È il momento di rispondere all'utente.
+
+**Risultati disponibili:**
+{tool_results_summary}
+
+**ISTRUZIONI FINALI:**
+Scrivi ORA una risposta all'utente che:
+1. Spiega onestamente cosa hai cercato e cosa hai (o non hai) trovato
+2. Offre alternative concrete: "Non ho trovato X, ma posso aiutarti con Y..."
+3. Chiede se l'utente vuole procedere diversamente
+
+**RISPONDI ORA - Non chiamare altri tool.**
+"""
+
+        return {
+            "messages": [SystemMessage(content=prompt)],
+            "tool_loop_action": "continue",
+            "tool_loop_detected": False,
+            "tool_loop_replan_count": current + 1,
+        }
+
+    def _increment_retry_count(self, state: AgentState) -> dict:
+        current = int(state.get("retry_count") or 0)
+        return {"retry_count": current + 1}
+
+    def _extract_papers_from_messages(self, messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract paper results from ToolMessages for search_scientific_papers."""
+        from langchain_core.messages import ToolMessage
+        import ast
+        import re
+        
+        papers = []
+        errors = []
+        seen_titles = set()  # Avoid duplicates
+        
+        for msg in messages:
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            content_str = str(content)
+            
+            # Try to parse the content as JSON or Python dict
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    # Try JSON first
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Try Python literal (handles single quotes)
+                        try:
+                            # Replace single quotes with double quotes for JSON parsing
+                            # Be careful with nested quotes
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # If parsing succeeded and we have papers
+            if isinstance(parsed, dict) and "papers" in parsed:
+                for paper in parsed.get("papers", []):
+                    if not isinstance(paper, dict):
+                        continue
+                    
+                    # Skip error entries
+                    if "error" in paper:
+                        errors.append(paper.get("error", "Unknown error"))
+                        continue
+                    
+                    title = paper.get("title", "") or paper.get("Title", "")
+                    if title and title != "N/A" and title not in seen_titles:
+                        seen_titles.add(title)
+                        papers.append({
+                            "title": title,
+                            "authors": paper.get("authors", "") or paper.get("Authors", ""),
+                            "abstract": paper.get("abstract", "") or paper.get("Abstract", ""),
+                            "link": paper.get("link", "") or paper.get("Link", ""),
+                            "source": paper.get("source", "arxiv"),
+                        })
+                
+                # Also check for errors array
+                if "errors" in parsed and parsed["errors"]:
+                    for err in parsed["errors"]:
+                        if isinstance(err, dict) and "error" in err:
+                            errors.append(err["error"])
+            
+            # Fallback: try to extract from raw text if parsing failed
+            elif "arxiv" in content_str.lower() or "title" in content_str.lower():
+                # Try to find title patterns in raw text
+                title_matches = re.findall(r"['\"]title['\"]:\s*['\"]([^'\"]+)['\"]", content_str, re.IGNORECASE)
+                link_matches = re.findall(r"https?://arxiv\.org/abs/[\w\.]+", content_str)
+                
+                for i, title in enumerate(title_matches):
+                    if title and title != "N/A" and title not in seen_titles:
+                        seen_titles.add(title)
+                        link = link_matches[i] if i < len(link_matches) else ""
+                        papers.append({
+                            "title": title,
+                            "authors": "",
+                            "abstract": "",
+                            "link": link,
+                            "source": "arxiv",
+                        })
+        
+        # If we have errors but no papers, include error info
+        if not papers and errors:
+            return [{"title": "Errore nella ricerca", "abstract": "; ".join(set(errors[:3])), "link": "", "authors": "", "source": "error"}]
+        
+        return papers
 
     def _get_dataset_tool(self) -> Optional[DatasetQueryTool]:
         for tool in self._tools:
@@ -318,13 +731,61 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
                     text_blob += " " + v
         return self._extract_first_numeric(text_blob)
 
+    def _retrieve_relevant_history(
+        self,
+        messages: Sequence[BaseMessage],
+        query: str,
+        top_k: int = 4,
+        max_snippet_chars: int = 800,
+        max_total_chars: int = 2200,
+    ) -> List[str]:
+        """Retrieve the most relevant past chat snippets using vector search."""
+        # Build corpus from non-system messages, excluding the latest user query itself
+        corpus = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                continue
+            if isinstance(msg, HumanMessage) and msg.content == query:
+                continue
+            content = (msg.content or "").strip()
+            if not content:
+                continue
+            # Truncate each message to avoid huge payloads
+            if len(content) > max_snippet_chars:
+                content = content[:max_snippet_chars] + "... [troncato]"
+            corpus.append((content, msg))
+
+        if not corpus:
+            return []
+
+        # Create vectorstore
+        vectorstore = InMemoryVectorStore.from_texts(
+            texts=[c[0] for c in corpus],
+            embedding=self._embeddings,
+            metadatas=[{"role": "user" if isinstance(c[1], HumanMessage) else "assistant"} for c in corpus],
+        )
+
+        # Similarity search
+        k = min(top_k, len(corpus))
+        results = vectorstore.similarity_search(query, k=k)
+
+        snippets: List[str] = []
+        total_chars = 0
+        for doc in results:
+            snippet = doc.page_content.strip()
+            if not snippet:
+                continue
+            # Ensure we do not exceed global cap
+            if total_chars + len(snippet) > max_total_chars:
+                break
+            snippets.append(snippet)
+            total_chars += len(snippet)
+
+        return snippets
+
     def _generate_one_line(self, question: str, number_str: str) -> Optional[str]:
         try:
-            llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=0.1,
-                api_key=self._llm.client.api_key,
-            )
+            llm = self._create_chat_without_tools(model=self._primary_model, temperature=0.1)
             prompt = (
                 "Scrivi una sola riga in italiano che risponda direttamente alla domanda, "
                 "contenendo il numero esatto fornito e pochissimo testo. "
@@ -338,6 +799,17 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             return line if number_str in line else f"{line} {number_str}"
         except Exception:
             return None
+
+    def _create_chat_without_tools(self, model: str, temperature: float) -> Any:
+        """Create a plain chat model (no tool binding) for small internal prompts."""
+        if self._llm_settings.provider == LlmProvider.OLLAMA:
+            from langchain_ollama import ChatOllama
+
+            return ChatOllama(model=model, temperature=temperature, base_url=self._llm_settings.ollama_base_url)
+
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(model=model, temperature=temperature, api_key=self._llm_settings.openai_api_key)
 
     def _finalize_response(self, question: str, response_text: str) -> str:
         first_line = (response_text or "").splitlines()[0] if response_text else ""
@@ -501,12 +973,7 @@ Esempio 4 - Rapporto Ipogeo/Epigeo:
 REGOLA CRITICA: Scomponi SEMPRE la domanda in 3-8 sottotask specifici. NON creare un singolo task generico."""
         
         try:
-            # Create a temporary LLM without tools for optimization
-            optimizer_llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=1,
-                api_key=self._llm.client.api_key,
-            )
+            optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
             
             response = optimizer_llm.invoke([HumanMessage(content=optimizer_prompt)])
             
@@ -560,13 +1027,17 @@ Task da completare:
 4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
 5. **Map Generation Tool**: Create interactive maps showing tree locations (markers, clusters, heatmaps). ONLY available for Milano dataset which has GPS coordinates.
 6. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
+7. **Species List Query Tool**: Query a plant species list (taxonomy + traits) to provide botanical context (family/order/class, growth form, leaf type, etc.).
+8. **Paper Search Tool**: Search arXiv and PubMed for scientific papers. Returns title, authors, abstract, and link to each paper.
 
 Guidelines:
 - When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
+- When users ask for botanical context about plant species (family/order/class, species code, growth form, leaf type, synonyms), use the species list query tool.
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
 - When users ask to show trees on a MAP, visualize distribution geographically, or create a map, use the map generation tool. NOTE: Maps are ONLY available for the Milano dataset (has GPS coordinates). Vienna dataset does NOT have coordinates.
 - Use specific biomass/volume tools when the user asks for those specific equations (Heyer, Leaf Biomass, etc.).
+- When users ask about scientific research, publications, papers, or literature, use the paper search tool. ALWAYS include the paper links in your response.
 - Always provide clear, helpful responses in Italian.
 - If you need more information, ask the user.
 - When using tools, explain the results in a user-friendly way.
@@ -654,7 +1125,76 @@ Common wood densities (g/cm³):
             )
             messages = [system_msg] + list(messages)
 
-        response = self._llm.invoke(messages)
+        def _truncate(msg: BaseMessage, max_len: int = 800) -> BaseMessage:
+            """Return a shallow copy of msg with truncated content."""
+            content = (msg.content or "") if hasattr(msg, "content") else ""
+            if len(content) > max_len:
+                content = content[:max_len] + "... [troncato]"
+            if isinstance(msg, HumanMessage):
+                return HumanMessage(content=content)
+            if isinstance(msg, AIMessage):
+                return AIMessage(content=content)
+            if isinstance(msg, SystemMessage):
+                return SystemMessage(content=content)
+            return msg
+
+        # Retrieve relevant history snippets to reduce full-context length
+        last_user_content = None
+        last_user_msg = None
+        for msg in reversed(messages):
+            if isinstance(msg, HumanMessage):
+                last_user_content = msg.content
+                last_user_msg = msg
+                break
+
+        context_block = None
+        if last_user_content:
+            # Ultra-conservative: disable context_block to minimize tokens
+            snippets = []
+
+        # Build a minimal message list: all system messages, last assistant (if any), last user, plus context block
+        system_messages = [m for m in messages if isinstance(m, SystemMessage)]
+        last_assistant = None
+        if last_user_msg:
+            for msg in reversed(messages):
+                if isinstance(msg, AIMessage):
+                    last_assistant = msg
+                    break
+
+        minimal_messages = []
+        minimal_messages.extend(system_messages[:1])  # only the first system message
+        if context_block:
+            minimal_messages.append(context_block)
+        if last_assistant:
+            minimal_messages.append(last_assistant)
+        if last_user_msg:
+            minimal_messages.append(last_user_msg)
+
+        # Truncate each message to keep tokens low
+        minimal_messages = [_truncate(m, max_len=400) for m in minimal_messages]
+
+        try:
+            response = self._llm.invoke(minimal_messages)
+        except Exception as e:
+            # Fallback to lighter model on rate limit / request too large
+            if "rate_limit" in str(e).lower() or "429" in str(e) or "request too large" in str(e).lower():
+                try:
+                    # Rebind tools to fallback LLM
+                    for tool in self._tools:
+                        if hasattr(tool, "_llm"):
+                            object.__setattr__(tool, "_llm", self._fallback_llm)
+                    self._llm = self._fallback_llm.bind_tools(self._tools)
+                    # Also drop assistant context to shrink prompt further
+                    minimal_fallback = []
+                    minimal_fallback.extend(system_messages[:1])
+                    if last_user_msg:
+                        minimal_fallback.append(last_user_msg)
+                    minimal_fallback = [_truncate(m, max_len=300) for m in minimal_fallback]
+                    response = self._llm.invoke(minimal_fallback)
+                except Exception:
+                    raise
+            else:
+                raise
         try:
             user_question = None
             for msg in messages:
@@ -735,12 +1275,7 @@ Rispondi in formato JSON:
 }}"""
         
         try:
-            # Create validator LLM
-            validator_llm = ChatOpenAI(
-                model="gpt-5",
-                temperature=1,
-                api_key=self._llm.client.api_key,
-            )
+            validator_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
             
             response = validator_llm.invoke([HumanMessage(content=validation_prompt)])
             
@@ -803,14 +1338,17 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
     def _should_retry(self, state: AgentState) -> Literal["complete", "retry"]:
         """Determine if we should retry or complete based on validation."""
         validation_result = state.get("validation_result", {})
+        retry_count = int(state.get("retry_count") or 0)
+        max_retries = 2
         
         # Check if response is complete
         is_complete = validation_result.get("is_complete", True)
         
         if is_complete:
             return "complete"
-        else:
-            return "retry"
+        if retry_count >= max_retries:
+            return "complete"
+        return "retry"
 
     def chat(self, message: str, history: Optional[List[dict]] = None) -> str:
         """Chat with the agent.
@@ -835,7 +1373,21 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         messages.append(HumanMessage(content=message))
 
         # Run graph
-        result = self._graph.invoke({"messages": messages})
+        result = self._graph.invoke(
+            {
+                "messages": messages,
+                "retry_count": 0,
+                "tool_last_fingerprint": None,
+                "tool_repeat_count": 0,
+                "tool_loop_detected": False,
+                "tool_loop_action": "continue",
+                "tool_loop_details": None,
+                "tool_loop_replan_count": 0,
+                "total_tool_calls": 0,
+                "tool_call_counts": {},
+            },
+            config={"recursion_limit": 80},
+        )
 
         # Extract final response
         final_message = result["messages"][-1]
@@ -876,7 +1428,22 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         map_data_json = None  # Track map data if generated
 
         # Stream from graph with updates mode to see each node
-        for event in self._graph.stream({"messages": messages}, stream_mode="updates"):
+        for event in self._graph.stream(
+            {
+                "messages": messages,
+                "retry_count": 0,
+                "tool_last_fingerprint": None,
+                "tool_repeat_count": 0,
+                "tool_loop_detected": False,
+                "tool_loop_action": "continue",
+                "tool_loop_details": None,
+                "tool_loop_replan_count": 0,
+                "total_tool_calls": 0,
+                "tool_call_counts": {},
+            },
+            config={"recursion_limit": 80},
+            stream_mode="updates",
+        ):
             # event is a dict with node_name: node_output
             for node_name, node_output in event.items():
                 
@@ -900,9 +1467,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                         reasoning = f"🔍 **Ottimizzazione Query**\n\n"
                         reasoning += f"Query ottimizzata: *{optimized}*\n\n"
                         if tasks:
-                            reasoning += "**Task identificati:**\n"
-                            for i, task in enumerate(tasks, 1):
-                                reasoning += f"{i}. {task}\n"
+                            reasoning += "**Task identificati:**\n\n"
+                            reasoning += "<ol>\n"
+                            for task in tasks:
+                                reasoning += f"<li>{task}</li>\n"
+                            reasoning += "</ol>\n\n"
                         yield {"type": "reasoning", "content": reasoning}
                 
                 elif node_name == "agent":
@@ -1006,10 +1575,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     if "results" in result_data:
                                         results = result_data.get("results", [])
                                         if results and len(results) > 0:
-                                            reasoning += f"**Primi risultati:**\n"
+                                            reasoning += f"**Primi risultati:**\n\n"
+                                            reasoning += "<ol>\n"
                                             # Show first 3 results as preview
-                                            for i, row in enumerate(results[:3], 1):
-                                                reasoning += f"{i}. "
+                                            for row in results[:3]:
+                                                reasoning += "<li>"
                                                 # Show main fields
                                                 if "genus_species" in row:
                                                     reasoning += f"Specie: {row['genus_species']} "
@@ -1019,7 +1589,8 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                                     reasoning += f"Distretto: {row['district']} "
                                                 if "trunk_circumference" in row:
                                                     reasoning += f"Circonferenza: {row['trunk_circumference']}cm "
-                                                reasoning += "\n"
+                                                reasoning += "</li>\n"
+                                            reasoning += "</ol>\n"
                                             
                                             if len(results) > 3:
                                                 reasoning += f"... e altri {len(results) - 3} risultati\n"
@@ -1041,6 +1612,22 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     # If not JSON, just show completion message
                                     reasoning = f"✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
                                     yield {"type": "reasoning", "content": reasoning}
+
+                elif node_name == "tool_loop_guard":
+                    # If the loop guard decided to stop, it injects an AIMessage with a user-facing prompt.
+                    node_messages = node_output.get("messages", [])
+                    if node_messages:
+                        last_msg = node_messages[-1]
+                        if isinstance(last_msg, AIMessage) and last_msg.content:
+                            final_response = last_msg.content
+                            yield {"type": "reasoning", "content": "🛑 **Stop Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Interrompo ed entro in modalità chiarimento.\n"}
+                    else:
+                        # Replan path: no user-facing message, we attempt a recovery step.
+                        if node_output.get("tool_loop_action") == "replan":
+                            yield {"type": "reasoning", "content": "🔁 **Recovery Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Provo a cambiare strategia (replanning) invece di fermarmi subito.\n"}
+
+                elif node_name == "tool_loop_replanner":
+                    yield {"type": "reasoning", "content": "🧠 **Replanning**\n\nSto riformulando il prossimo passo per evitare di ripetere la stessa query/tool e provare una strada alternativa.\n"}
                 
                 elif node_name == "validator":
                     validation = node_output.get("validation_result", {})

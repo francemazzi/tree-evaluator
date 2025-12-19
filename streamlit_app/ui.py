@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import List, Optional, Tuple
 
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from streamlit_app.models import ChatMessage, Conversation
+from streamlit_app.llm.ollama_client import OllamaClient
+from streamlit_app.models import ChatMessage, Conversation, UserLlmSettings
 from streamlit_app.service import ChatService
 
 
@@ -17,14 +19,64 @@ class ChatUI:
     def __init__(self, service: ChatService) -> None:
         self._service = service
 
+    def _build_openai_chat_model_options(self, current: str) -> List[str]:
+        """Return OpenAI chat model options, ensuring the current selection is included."""
+        defaults = [
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o3-mini",
+            "o1",
+        ]
+        current_clean = (current or "").strip()
+        options = []
+        if current_clean and current_clean not in defaults:
+            options.append(current_clean)
+        options.extend(defaults)
+        options.append("Altro…")
+        # Deduplicate preserving order
+        seen = set()
+        out: List[str] = []
+        for m in options:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    def _build_openai_embedding_model_options(self, current: str) -> List[str]:
+        """Return OpenAI embedding model options, ensuring the current selection is included."""
+        defaults = [
+            "text-embedding-3-small",
+            "text-embedding-3-large",
+            "text-embedding-ada-002",
+        ]
+        current_clean = (current or "").strip()
+        options = []
+        if current_clean and current_clean not in defaults:
+            options.append(current_clean)
+        options.extend(defaults)
+        options.append("Altro…")
+        seen = set()
+        out: List[str] = []
+        for m in options:
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
+
+    def _resolve_openai_model_selection(self, selected: str, custom_value: str) -> str:
+        """Resolve a selectbox value with optional custom input."""
+        if selected == "Altro…":
+            return (custom_value or "").strip()
+        return (selected or "").strip()
+
     def _ensure_session(self) -> None:
         """Initialize session state variables."""
         if "user_id" not in st.session_state:
             st.session_state.user_id = "guest"
-        if "openai_api_key" not in st.session_state:
-            # Load API key from database if exists
-            saved_key = self._service.get_user_api_key(st.session_state.get("user_id", "guest"))
-            st.session_state.openai_api_key = saved_key or ""
+        if "llm_settings" not in st.session_state:
+            st.session_state.llm_settings = self._service.get_user_llm_settings(st.session_state.get("user_id", "guest"))
         if "current_conversation_id" not in st.session_state:
             st.session_state.current_conversation_id: Optional[int] = None
         if "messages" not in st.session_state:
@@ -55,24 +107,172 @@ class ChatUI:
         with st.sidebar:
             st.header("⚙️ Settings")
             
-            # OpenAI API Key input
-            new_api_key = st.text_input(
-                "OpenAI API Key",
-                value=st.session_state.openai_api_key,
-                type="password",
-                key="api_key_input",
-                help="Inserisci la tua chiave API OpenAI (sk-...). Verrà salvata in modo persistente.",
-                placeholder="sk-..."
+            settings: UserLlmSettings = st.session_state.llm_settings
+            st.session_state.llm_block_reason = None
+
+            provider = st.selectbox(
+                "Provider LLM",
+                options=["openai", "ollama"],
+                index=0 if settings.provider == "openai" else 1,
+                help="Scegli se usare OpenAI (GPT) oppure Ollama in locale.",
             )
-            if new_api_key != st.session_state.openai_api_key:
-                st.session_state.openai_api_key = new_api_key.strip()
-                # Save API key to database
-                if new_api_key.strip():
-                    self._service.save_user_api_key(st.session_state.user_id, new_api_key.strip())
-                    st.success("✅ Chiave API salvata!")
-                # Reset agent to force re-initialization with new key
+
+            if provider != settings.provider:
+                settings.provider = provider
+                self._service.save_user_llm_settings(settings)
                 self._service._agent = None
                 st.rerun()
+
+            if provider == "openai":
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    new_api_key = st.text_input(
+                        "OpenAI API Key",
+                        value=settings.openai_api_key,
+                        type="password",
+                        key="api_key_input",
+                        help="Inserisci la tua chiave API OpenAI (sk-...). Verrà salvata in modo persistente.",
+                        placeholder="sk-..."
+                    )
+                with col2:
+                    st.write("")
+                    st.write("")
+                    if st.button("Salva", use_container_width=True):
+                        settings.openai_api_key = new_api_key.strip()
+                        self._service.save_user_llm_settings(settings)
+                        self._service._agent = None
+                        st.success("✅ Impostazioni salvate!")
+                        st.rerun()
+
+                chat_options = self._build_openai_chat_model_options(settings.openai_chat_model)
+                chat_selected = st.selectbox(
+                    "Modello OpenAI (chat)",
+                    options=chat_options,
+                    index=(
+                        chat_options.index(settings.openai_chat_model)
+                        if settings.openai_chat_model in chat_options
+                        else 0
+                    ),
+                    help="Seleziona il modello chat OpenAI. Puoi scegliere “Altro…” per inserire un nome custom.",
+                )
+                custom_chat = ""
+                if chat_selected == "Altro…":
+                    custom_chat = st.text_input(
+                        "Nome modello chat (custom)",
+                        value=settings.openai_chat_model,
+                        help="Inserisci il nome esatto del modello (es. gpt-5).",
+                    )
+
+                embed_options = self._build_openai_embedding_model_options(settings.openai_embedding_model)
+                embed_selected = st.selectbox(
+                    "Modello OpenAI (embeddings)",
+                    options=embed_options,
+                    index=(
+                        embed_options.index(settings.openai_embedding_model)
+                        if settings.openai_embedding_model in embed_options
+                        else 0
+                    ),
+                    help="Seleziona il modello embeddings OpenAI. Puoi scegliere “Altro…” per inserire un nome custom.",
+                )
+                custom_embed = ""
+                if embed_selected == "Altro…":
+                    custom_embed = st.text_input(
+                        "Nome modello embeddings (custom)",
+                        value=settings.openai_embedding_model,
+                        help="Inserisci il nome esatto del modello embeddings (es. text-embedding-3-small).",
+                    )
+
+                resolved_chat = self._resolve_openai_model_selection(chat_selected, custom_chat)
+                resolved_embed = self._resolve_openai_model_selection(embed_selected, custom_embed)
+
+                changed = (
+                    resolved_chat
+                    and resolved_embed
+                    and (
+                        resolved_chat != (settings.openai_chat_model or "").strip()
+                        or resolved_embed != (settings.openai_embedding_model or "").strip()
+                    )
+                )
+                if changed:
+                    if st.button("Applica modelli OpenAI"):
+                        settings.openai_chat_model = resolved_chat
+                        settings.openai_embedding_model = resolved_embed
+                        self._service.save_user_llm_settings(settings)
+                        self._service._agent = None
+                        st.success("✅ Modelli OpenAI aggiornati!")
+                        st.rerun()
+
+            else:
+                st.info("Stai usando **Ollama in locale**. La chiave OpenAI non è necessaria.")
+
+                base_url = st.text_input(
+                    "Ollama base URL",
+                    value=settings.ollama_base_url,
+                    help="Suggerito: macOS/Windows Docker Desktop → http://host.docker.internal:11434; Linux → http://172.17.0.1:11434; fuori da Docker → http://localhost:11434",
+                )
+
+                # Model discovery
+                if "ollama_models_cache" not in st.session_state:
+                    st.session_state.ollama_models_cache = []
+
+                cols = st.columns([1, 1, 2])
+                with cols[0]:
+                    refresh = st.button("↻ Aggiorna modelli", use_container_width=True)
+                with cols[1]:
+                    use_cached = st.checkbox("Usa cache", value=True)
+                if refresh or (not use_cached) or not st.session_state.ollama_models_cache:
+                    client = OllamaClient(base_url=base_url.strip() or settings.ollama_base_url)
+                    st.session_state.ollama_models_cache = client.list_model_names()
+
+                model_names: List[str] = st.session_state.ollama_models_cache
+                if not model_names:
+                    st.error("Non riesco a leggere **nessun modello** da Ollama (o Ollama non è raggiungibile).")
+                    st.markdown("Se non hai ancora scaricato nulla, esegui sul tuo host:")
+                    st.code("ollama pull nomic-embed-text\nollama pull gpt-oss:20b", language="bash")
+                    st.session_state.llm_block_reason = (
+                        "Ollama non ha modelli disponibili (o non è raggiungibile). "
+                        "Scarica almeno un modello chat e un modello embeddings, poi premi “Aggiorna modelli”."
+                    )
+
+                chat_model = st.selectbox(
+                    "Modello Ollama (chat)",
+                    options=model_names if model_names else [settings.ollama_chat_model],
+                    index=(model_names.index(settings.ollama_chat_model) if model_names and settings.ollama_chat_model in model_names else 0),
+                )
+
+                # For embeddings, prefer embedding-capable models (e.g., nomic-embed-text)
+                embedding_candidates = [
+                    n for n in model_names
+                    if any(k in n.lower() for k in ("embed", "bge", "mxbai"))
+                ]
+                if model_names and not embedding_candidates:
+                    st.warning("Non vedo embedding model tra quelli installati in Ollama.")
+                    st.markdown("Suggerimento (host):")
+                    st.code("ollama pull nomic-embed-text", language="bash")
+                embedding_options = embedding_candidates or (model_names if model_names else [settings.ollama_embedding_model])
+                embed_model = st.selectbox(
+                    "Modello Ollama (embeddings)",
+                    options=embedding_options,
+                    index=(
+                        embedding_options.index(settings.ollama_embedding_model)
+                        if settings.ollama_embedding_model in embedding_options
+                        else 0
+                    ),
+                )
+                if embed_model and not any(k in embed_model.lower() for k in ("embed", "bge", "mxbai")):
+                    st.warning("Il modello embeddings selezionato non sembra un embedding model. Consigliato: **nomic-embed-text** (o simili).")
+
+                if st.button("Salva impostazioni Ollama"):
+                    if not model_names:
+                        st.error("Impossibile salvare: Ollama non ha modelli disponibili (o non è raggiungibile).")
+                        st.stop()
+                    settings.ollama_base_url = base_url.strip() or settings.ollama_base_url
+                    settings.ollama_chat_model = chat_model
+                    settings.ollama_embedding_model = embed_model
+                    self._service.save_user_llm_settings(settings)
+                    self._service._agent = None
+                    st.success("✅ Impostazioni Ollama salvate!")
+                    st.rerun()
 
             st.divider()
             st.header("📊 Gestione Dataset")
@@ -604,12 +804,15 @@ class ChatUI:
 
         self._render_sidebar()
 
+        settings: UserLlmSettings = st.session_state.llm_settings
+        block_reason = st.session_state.get("llm_block_reason")
+
         # Main chat area
         if st.session_state.current_conversation_id is None:
             st.info("👈 Seleziona una conversazione dalla sidebar o creane una nuova per iniziare!")
             
             # Show welcome message with instructions
-            if not st.session_state.openai_api_key:
+            if settings.provider == "openai" and not settings.openai_api_key:
                 st.warning("""
                 ### 🔑 Configurazione richiesta
                 
@@ -626,10 +829,14 @@ class ChatUI:
         else:
             self._render_messages()
 
+            if block_reason:
+                st.warning(block_reason)
+                return
+
             # Chat input
             if prompt := st.chat_input("Scrivi un messaggio…"):
                 # Check if API key is provided (warn but continue)
-                if not st.session_state.openai_api_key:
+                if settings.provider == "openai" and not settings.openai_api_key:
                     st.info("ℹ️ Nessuna API key configurata. Userò risposte demo. Inserisci la chiave OpenAI nelle impostazioni per usare l'agent intelligente.")
                 
                 user_id = st.session_state.user_id
@@ -665,7 +872,7 @@ class ChatUI:
                         user_id=user_id,
                         conversation_id=conversation_id,
                         last_user_message=prompt,
-                        openai_api_key=st.session_state.openai_api_key or None
+                        openai_api_key=settings.openai_api_key or None
                     ):
                         chunk_type = chunk.get("type", "response")
                         chunk_content = chunk.get("content", "")

@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Type
 from langchain_core.documents import Document
 from langchain_core.tools import BaseTool
 from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_openai import OpenAIEmbeddings
 from pydantic import BaseModel, Field
 
 
@@ -73,7 +72,8 @@ class DatasetQueryTool(BaseTool):
 
     _db_path: Path
     _llm: Any = None
-    _embeddings: Optional[OpenAIEmbeddings] = None
+    _fallback_llm: Any = None
+    _embeddings: Any = None
     _table_name: str = "baumkatogd"
     _user_description: str = ""
 
@@ -83,6 +83,8 @@ class DatasetQueryTool(BaseTool):
         table_name: Optional[str] = None,
         user_description: str = "",
         llm: Any = None, 
+        fallback_llm: Any = None,
+        embeddings: Any = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -90,6 +92,7 @@ class DatasetQueryTool(BaseTool):
             db_path = Path(__file__).parent.parent.parent / "dataset" / "BAUMKATOGD.db"
         object.__setattr__(self, "_db_path", db_path)
         object.__setattr__(self, "_llm", llm)
+        object.__setattr__(self, "_fallback_llm", fallback_llm)
         
         # Set table name (default: baumkatogd for Vienna trees)
         if table_name:
@@ -99,7 +102,7 @@ class DatasetQueryTool(BaseTool):
         object.__setattr__(self, "_user_description", user_description)
         
         # Initialize embeddings for vector search (lazy initialization)
-        object.__setattr__(self, "_embeddings", None)
+        object.__setattr__(self, "_embeddings", embeddings)
         
         # Update description if custom dataset is used
         if table_name and table_name != "baumkatogd":
@@ -214,8 +217,21 @@ Now translate this question:
                 "LLM is required for natural language to SQL translation. "
                 "Please initialize DatasetQueryTool with an LLM instance."
             )
-        
-        response = self._llm.invoke(prompt)
+
+        def _invoke_with_fallback() -> Any:
+            try:
+                return self._llm.invoke(prompt)
+            except Exception as e:
+                # Fallback to a lighter model on rate-limit or size errors
+                if "rate_limit" in str(e).lower() or "429" in str(e) or "Request too large" in str(e):
+                    try:
+                        if self._fallback_llm:
+                            return self._fallback_llm.invoke(prompt)
+                    except Exception:
+                        pass
+                raise
+
+        response = _invoke_with_fallback()
         sql = response.content if hasattr(response, 'content') else str(response)
         
         # Clean up response
@@ -233,10 +249,10 @@ Now translate this question:
         return sql
     
 
-    def _init_embeddings(self) -> OpenAIEmbeddings:
-        """Initialize embeddings (lazy initialization)."""
+    def _init_embeddings(self) -> Any:
+        """Return embeddings instance if available; otherwise raise to trigger truncation fallback."""
         if self._embeddings is None:
-            object.__setattr__(self, "_embeddings", OpenAIEmbeddings(model="text-embedding-3-small"))
+            raise RuntimeError("Embeddings not configured for DatasetQueryTool")
         return self._embeddings
     
     def _semantic_filter_results(

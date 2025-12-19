@@ -4,8 +4,36 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
+from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
 
 Role = Literal["user", "assistant"]
+
+
+@dataclass
+class UserLlmSettings:
+    """Persisted per-user LLM preferences used by Streamlit UI and agent initialization."""
+
+    user_id: str
+    provider: str  # "openai" | "ollama"
+    openai_api_key: str
+    openai_chat_model: str
+    openai_embedding_model: str
+    ollama_base_url: str
+    ollama_chat_model: str
+    ollama_embedding_model: str
+
+    @staticmethod
+    def default(user_id: str) -> "UserLlmSettings":
+        return UserLlmSettings(
+            user_id=user_id,
+            provider="openai",
+            openai_api_key="",
+            openai_chat_model="gpt-5",
+            openai_embedding_model="text-embedding-3-small",
+            ollama_base_url=OllamaBaseUrlResolver().resolve(),
+            ollama_chat_model="qwen2.5:7b-instruct",
+            ollama_embedding_model="nomic-embed-text",
+        )
 
 
 @dataclass

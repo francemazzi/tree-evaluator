@@ -85,6 +85,7 @@ class MapGenerationTool(BaseTool):
 
     _db_path: Path
     _llm: Any = None
+    _fallback_llm: Any = None
     _table_name: str = "milano_trees"  # Default to Milano which has GPS
     _lat_column: str = "latitude"
     _lon_column: str = "longitude"
@@ -95,7 +96,8 @@ class MapGenerationTool(BaseTool):
         table_name: Optional[str] = None,
         lat_column: str = "latitude",
         lon_column: str = "longitude",
-        llm: Any = None, 
+        llm: Any = None,
+        fallback_llm: Any = None,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -103,6 +105,7 @@ class MapGenerationTool(BaseTool):
             db_path = Path(__file__).parent.parent.parent / "dataset" / "dataset_milano.db"
         object.__setattr__(self, "_db_path", db_path)
         object.__setattr__(self, "_llm", llm)
+        object.__setattr__(self, "_fallback_llm", fallback_llm)
         
         if table_name:
             object.__setattr__(self, "_table_name", table_name)
@@ -199,8 +202,20 @@ Now generate the query for: {data_query}"""
         
         if not self._llm:
             raise ValueError("LLM is required. Initialize MapGenerationTool with an LLM instance.")
-        
-        response = self._llm.invoke(prompt)
+
+        def _invoke_with_fallback() -> Any:
+            try:
+                return self._llm.invoke(prompt)
+            except Exception as e:
+                if "rate_limit" in str(e).lower() or "429" in str(e) or "Request too large" in str(e):
+                    try:
+                        if self._fallback_llm:
+                            return self._fallback_llm.invoke(prompt)
+                    except Exception:
+                        pass
+                raise
+
+        response = _invoke_with_fallback()
         response_text = response.content if hasattr(response, 'content') else str(response)
         
         # Clean up and parse JSON

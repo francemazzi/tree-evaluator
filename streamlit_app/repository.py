@@ -82,10 +82,41 @@ class ChatRepository:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
                     openai_api_key TEXT,
+                    llm_provider TEXT,
+                    openai_chat_model TEXT,
+                    openai_embedding_model TEXT,
+                    ollama_base_url TEXT,
+                    ollama_chat_model TEXT,
+                    ollama_embedding_model TEXT,
                     updated_at TEXT NOT NULL
                 );
                 """
             )
+            self._ensure_user_settings_columns(connection)
+
+    def _ensure_user_settings_columns(self, connection: sqlite3.Connection) -> None:
+        """Best-effort schema migration for user_settings (SQLite ALTER TABLE ADD COLUMN)."""
+        try:
+            cursor = connection.execute("PRAGMA table_info(user_settings)")
+            existing = {row[1] for row in cursor.fetchall()}  # type: ignore[index]
+        except Exception:
+            return
+
+        desired_columns = {
+            "llm_provider": "TEXT",
+            "openai_chat_model": "TEXT",
+            "openai_embedding_model": "TEXT",
+            "ollama_base_url": "TEXT",
+            "ollama_chat_model": "TEXT",
+            "ollama_embedding_model": "TEXT",
+        }
+        for col, col_type in desired_columns.items():
+            if col not in existing:
+                try:
+                    connection.execute(f"ALTER TABLE user_settings ADD COLUMN {col} {col_type}")
+                except Exception:
+                    # Ignore if running on older SQLite or concurrent migration.
+                    pass
 
     # Conversation methods
     
@@ -206,19 +237,57 @@ class ChatRepository:
 
     # User settings methods
     
-    def save_user_settings(self, user_id: str, openai_api_key: str) -> None:
-        """Save or update user settings (OpenAI API key)."""
+    def save_user_settings(
+        self,
+        user_id: str,
+        openai_api_key: str,
+        llm_provider: str = "openai",
+        openai_chat_model: str = "gpt-5",
+        openai_embedding_model: str = "text-embedding-3-small",
+        ollama_base_url: str = "",
+        ollama_chat_model: str = "qwen2.5:7b-instruct",
+        ollama_embedding_model: str = "nomic-embed-text",
+    ) -> None:
+        """Save or update user settings (LLM provider + models + optional OpenAI API key)."""
         from datetime import datetime, timezone
+        from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
         with self._connect() as connection:
+            resolved_ollama_base_url = ollama_base_url.strip() or OllamaBaseUrlResolver().resolve()
             connection.execute(
                 """
-                INSERT INTO user_settings (user_id, openai_api_key, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO user_settings (
+                    user_id,
+                    openai_api_key,
+                    llm_provider,
+                    openai_chat_model,
+                    openai_embedding_model,
+                    ollama_base_url,
+                    ollama_chat_model,
+                    ollama_embedding_model,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     openai_api_key = excluded.openai_api_key,
+                    llm_provider = excluded.llm_provider,
+                    openai_chat_model = excluded.openai_chat_model,
+                    openai_embedding_model = excluded.openai_embedding_model,
+                    ollama_base_url = excluded.ollama_base_url,
+                    ollama_chat_model = excluded.ollama_chat_model,
+                    ollama_embedding_model = excluded.ollama_embedding_model,
                     updated_at = excluded.updated_at
                 """,
-                (user_id, openai_api_key, datetime.now(tz=timezone.utc).isoformat()),
+                (
+                    user_id,
+                    openai_api_key,
+                    llm_provider,
+                    openai_chat_model,
+                    openai_embedding_model,
+                    resolved_ollama_base_url,
+                    ollama_chat_model,
+                    ollama_embedding_model,
+                    datetime.now(tz=timezone.utc).isoformat(),
+                ),
             )
     
     def get_user_settings(self, user_id: str) -> Optional[dict]:
@@ -226,7 +295,14 @@ class ChatRepository:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                SELECT openai_api_key
+                SELECT
+                    openai_api_key,
+                    llm_provider,
+                    openai_chat_model,
+                    openai_embedding_model,
+                    ollama_base_url,
+                    ollama_chat_model,
+                    ollama_embedding_model
                 FROM user_settings
                 WHERE user_id = ?
                 """,
