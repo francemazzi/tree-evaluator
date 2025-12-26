@@ -34,6 +34,10 @@ class LeafBiomassTool(BaseTool):
             "leaf_biomass": biomass,
             "unit": "kg (estimated)",
             "formula": "Leaf = e^(-7.21) * (D² * H)^0.6 * age^3.2 * 1.28",
-            "method": "Leaf Biomass Equation"
+            "method": "Leaf Biomass Equation",
+            "source": {
+                "title": "Development of Allometric Equations to Determine the Biomass of Plant Components and the Total Storage of Carbon Dioxide in Young Mediterranean Argan Trees",
+                "url": "https://www.researchgate.net/publication/380957635_Development_of_Allometric_Equations_to_Determine_the_Biomass_of_Plant_Components_and_the_Total_Storage_of_Carbon_Dioxide_in_Young_Mediterranean_Argan_Trees"
+            }
         }
 

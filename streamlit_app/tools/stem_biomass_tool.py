@@ -32,6 +32,10 @@ class StemBiomassTool(BaseTool):
             "stem_biomass": biomass,
             "unit": "kg (estimated)",
             "formula": "Stem = e^(-8.15 + 2.20D + 1.24 age - 0.35 D * age) * 1.41",
-            "method": "Stem Biomass Equation"
+            "method": "Stem Biomass Equation",
+            "source": {
+                "title": "Development of Allometric Equations to Determine the Biomass of Plant Components and the Total Storage of Carbon Dioxide in Young Mediterranean Argan Trees",
+                "url": "https://www.researchgate.net/publication/380957635_Development_of_Allometric_Equations_to_Determine_the_Biomass_of_Plant_Components_and_the_Total_Storage_of_Carbon_Dioxide_in_Young_Mediterranean_Argan_Trees"
+            }
         }
 

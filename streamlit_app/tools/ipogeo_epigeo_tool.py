@@ -117,6 +117,11 @@ class IpogeoEpigeoTool(BaseTool):
                 "Calcolo disponibile solo per hardwood/latifoglie e softwood/conifere. "
                 "I valori derivano dal dataset ipogeo_epigeo.csv."
             ),
+            "formula": "BGB = AGB * (roots / above_ground_biomass)",
+            "source": {
+                "title": "Root biomass allocation in the world's upland forests",
+                "url": "https://onlinelibrary.wiley.com/doi/abs/10.1111/j.1365-2486.2005.001043.x"
+            },
         }
 
         if above_ground_biomass_kg is not None:

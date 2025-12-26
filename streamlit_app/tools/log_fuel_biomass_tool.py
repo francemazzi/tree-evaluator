@@ -28,6 +28,10 @@ class LogFuelBiomassTool(BaseTool):
         return {
             "result_y": y_value,
             "formula": "Y = CF * exp(a + b * Log(X))",
-            "method": "Logarithmic Equation with CF"
+            "method": "Logarithmic Equation with CF",
+            "source": {
+                "title": "Allometric equations to calculate living and dead fuel loads in Mediterranean species",
+                "url": "https://www.researchgate.net/publication/377661797_Allometric_equations_to_calculate_living_and_dead_fuel_loads_in_Mediterranean_species"
+            }
         }
 

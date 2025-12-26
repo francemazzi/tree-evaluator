@@ -34,6 +34,10 @@ class RootBiomassTool(BaseTool):
             "root_biomass": biomass,
             "unit": "kg (estimated)",
             "formula": "Root = e^(-5) * D^1.48 * H^0.4 * age^1.38 * (R_S)^0.31 * 1.26",
-            "method": "Root Biomass Equation"
+            "method": "Root Biomass Equation",
+            "source": {
+                "title": "Development of Allometric Equations to Determine the Biomass of Plant Components and the Total Storage of Carbon Dioxide in Young Mediterranean Argan Trees",
+                "url": "https://www.researchgate.net/publication/380957635_Development_of_Allometric_Equations_to_Determine_the_Biomass_of_Plant_Components_and_the_Total_Storage_of_Carbon_Dioxide_in_Young_Mediterranean_Argan_Trees"
+            }
         }
 

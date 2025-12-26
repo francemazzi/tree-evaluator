@@ -21,6 +21,10 @@ class SimplifiedVolumeTool(BaseTool):
             "volume": volume,
             "unit": "m³",
             "formula": "V = 0.77 * D²",
-            "method": "Simplified Volume Equation"
+            "method": "Simplified Volume Equation",
+            "source": {
+                "title": "Allometric relationships for volume and biomass for stone pine (Pinus pinea L.) in Italian coastal stands",
+                "url": "https://www.researchgate.net/publication/256199126_Allometric_relationships_for_volume_and_biomass_for_stone_pine_Pinus_pinea_L_in_Italian_coastal_stands"
+            }
         }
 

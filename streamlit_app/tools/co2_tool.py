@@ -99,5 +99,47 @@ class CO2CalculationTool(BaseTool):
             annual_biomass_increment_t=annual_biomass_increment_t,
         )
         response = self._service.calculate(request)
-        return response.model_dump()
+        result = response.model_dump()
+        
+        # Add scientific sources for each formula used
+        result["formulas"] = {
+            "agb": {
+                "formula": "AGB = 0.0673 * (WD * D² * H)^0.976",
+                "description": "Chave et al. (2014) generalized equation for above-ground biomass",
+                "source": {
+                    "title": "Improved allometric models to estimate the aboveground biomass of tropical trees",
+                    "url": "https://www.researchgate.net/publication/262197290_Improved_allometric_models_to_estimate_the_aboveground_biomass_of_tropical_trees"
+                }
+            },
+            "bgb": {
+                "formula": "BGB = root_shoot_ratio * AGB",
+                "description": "Below-ground biomass from root-to-shoot ratio",
+                "source": {
+                    "title": "Root Biomass and Density for Trees and Forests",
+                    "url": "https://ww2.arb.ca.gov/sites/default/files/cap-and-trade/protocols/usforest/references/cairns1997.pdf"
+                }
+            },
+            "total_biomass": {
+                "formula": "Total_Biomass = AGB + BGB",
+                "description": "Sum of above-ground and below-ground biomass"
+            },
+            "carbon": {
+                "formula": "Carbon = Total_Biomass * carbon_fraction",
+                "description": "Carbon content from biomass using species-specific or default carbon fraction",
+                "source": {
+                    "title": "Carbon Content of Tree Tissues: A Synthesis",
+                    "url": "https://www.researchgate.net/publication/259443596_Carbon_Content_of_Tree_Tissues_A_Synthesis"
+                }
+            },
+            "co2_stock": {
+                "formula": "CO2_Stock = Carbon * (44/12)",
+                "description": "CO2 equivalent from carbon using molecular weight ratio (CO2=44, C=12)"
+            },
+            "co2_annual": {
+                "formula": "CO2_Annual = Annual_Increment * carbon_fraction * (44/12)",
+                "description": "Annual CO2 sequestration from biomass increment"
+            }
+        }
+        
+        return result
 

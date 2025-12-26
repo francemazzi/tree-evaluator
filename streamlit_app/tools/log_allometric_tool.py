@@ -27,6 +27,10 @@ class LogAllometricTool(BaseTool):
             "ln_y": ln_y,
             "ln_x": ln_x,
             "formula": "ln Y = ln a + b ln X",
-            "method": "Logarithmic Allometric"
+            "method": "Logarithmic Allometric",
+            "source": {
+                "title": "Allometric equations to calculate living and dead fuel loads in Mediterranean species",
+                "url": "https://www.researchgate.net/publication/377661797_Allometric_equations_to_calculate_living_and_dead_fuel_loads_in_Mediterranean_species"
+            }
         }
 

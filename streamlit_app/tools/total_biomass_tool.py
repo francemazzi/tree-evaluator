@@ -34,6 +34,10 @@ class TotalBiomassTool(BaseTool):
             "total_biomass": biomass,
             "unit": "kg (estimated)",
             "formula": "Total = e^(-4.2) * D^1.36 * H^0.57 * age^1.67 * (R_S)^(-0.3) * 1.23",
-            "method": "Total Biomass Equation"
+            "method": "Total Biomass Equation",
+            "source": {
+                "title": "Development of Allometric Equations to Determine the Biomass of Plant Components and the Total Storage of Carbon Dioxide in Young Mediterranean Argan Trees",
+                "url": "https://www.researchgate.net/publication/380957635_Development_of_Allometric_Equations_to_Determine_the_Biomass_of_Plant_Components_and_the_Total_Storage_of_Carbon_Dioxide_in_Young_Mediterranean_Argan_Trees"
+            }
         }
 
