@@ -27,6 +27,87 @@ Accedi a:
 docker compose -f docker-compose.prod.yml up --build -d
 ```
 
+## 🔨 Script di Build
+
+Per semplificare la gestione della build dei container, sono disponibili script dedicati:
+
+### Linux/macOS
+
+```bash
+# Build tutti i servizi
+./build.sh
+
+# Build solo un servizio
+./build.sh api
+./build.sh streamlit
+
+# Rebuild completo senza cache
+./build.sh --no-cache
+
+# Build per produzione
+./build.sh --prod
+
+# Pulizia e rebuild completo
+./build.sh --clean --no-cache
+
+# Build con pull immagini base aggiornate
+./build.sh --pull
+
+# Mostra help
+./build.sh --help
+```
+
+### Windows
+
+```batch
+# Build tutti i servizi
+build.bat
+
+# Build solo un servizio
+build.bat api
+build.bat streamlit
+
+# Rebuild completo senza cache
+build.bat --no-cache
+
+# Build per produzione
+build.bat --prod
+
+# Pulizia e rebuild completo
+build.bat --clean --no-cache
+
+# Build con pull immagini base aggiornate
+build.bat --pull
+
+# Mostra help
+build.bat --help
+```
+
+### Comandi Docker Compose Diretti
+
+Se preferisci usare direttamente Docker Compose:
+
+```bash
+# Build tutti i servizi (sviluppo)
+docker compose build
+
+# Build senza cache
+docker compose build --no-cache
+
+# Build solo un servizio
+docker compose build api
+docker compose build streamlit
+
+# Build per produzione
+docker compose -f docker-compose.prod.yml build
+
+# Build e avvio in un comando
+docker compose up --build
+
+# Build e avvio in background
+docker compose up --build -d
+```
+
 ## 📦 Immagini Docker
 
 ### 1. API (FastAPI)

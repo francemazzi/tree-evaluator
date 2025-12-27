@@ -1062,11 +1062,35 @@ Guidelines:
      * "Tool utilizzati: Dataset Query Tool, Chart Generation Tool"
      * "Tool utilizzati: Allometric Relation Tool"
 
-3. **Complete answer format**:
+3. **ALWAYS cite scientific sources** when using calculation tools:
+   - When tool results include "source" or "sources" fields with scientific papers, you MUST include them in your response.
+   - When tool results include "data_source" with open data information, you MUST cite the data provider and URL.
+   - When tool results include "formulas" with source information, cite the relevant papers for each formula used.
+   - Format for scientific sources: "📚 Fonte: [title] - [url]"
+   - Format for data sources: "📊 Dati: [provider] - [url]"
+   - Example with scientific source:
+     "La CO₂ sequestrata è 1.250 kg CO2
+     
+     Formule utilizzate:
+     - AGB (Chave et al. 2014): https://www.researchgate.net/publication/262197290
+     - Carbon content: https://www.researchgate.net/publication/259443596
+     
+     Tool utilizzati: CO2 Calculation Tool"
+   - Example with data source:
+     "A Milano la specie più diffusa è Platanus × acerifolia: 14.005 alberi
+     
+     📊 Dati: Comune di Milano - Open Data
+     https://dati.comune.milano.it/dataset/ds447-infogeo-aree-verdi-alberi-702eb2e7
+     
+     Tool utilizzati: Dataset Query Tool"
+
+4. **Complete answer format**:
    ```
    [Prima riga: risposta diretta con numero e unità di misura]
    
    [Dettagli aggiuntivi se necessari]
+   
+   [Fonti scientifiche/dati se presenti nel risultato del tool]
    
    Tool utilizzati: [nome tool(s)]
    ```
@@ -1079,13 +1103,12 @@ Answer style policy (CRITICAL for evaluation):
 - Mirror user phrasing when possible to maximize textual similarity.
 - ALWAYS end with "Tool utilizzati: [nome tool]"
 
-Examples with units and tool citation:
-  - "A Vienna ci sono 23 distretti\n\nTool utilizzati: Dataset Query Tool"
-  - "Gli alberi totali a Vienna sono 229.298 alberi\n\nTool utilizzati: Dataset Query Tool"
-  - "Nel distretto 19 sono presenti esattamente 15.842 alberi\n\nTool utilizzati: Dataset Query Tool"
-  - "Il rapporto R/S per le conifere temperate è 0,24\n\nStima basata su letteratura scientifica per conifere.\n\nTool utilizzati: Allometric Relation Tool"
-  - "La CO₂ sequestrata è 1.250 kg CO2\n\nCalcolo basato su DBH 30cm, altezza 15m, densità legno 0.56 g/cm³.\n\nTool utilizzati: CO2 Calculation Tool"
-  - "Il volume stimato è 2,5 m³\n\nCalcolo con formula di Heyer per DBH 30cm e altezza 15m.\n\nTool utilizzati: Heyer Volume Tool"
+Examples with units, sources, and tool citation:
+  - "A Vienna ci sono 23 distretti\n\n📊 Dati: City of Vienna - Open Data\nhttps://www.data.gv.at/katalog/dataset/stadt-wien_baumkatasterderstadtwien\n\nTool utilizzati: Dataset Query Tool"
+  - "A Milano la specie più diffusa è Platanus × acerifolia: 14.005 alberi\n\n📊 Dati: Comune di Milano - Open Data\nhttps://dati.comune.milano.it/dataset/ds447-infogeo-aree-verdi-alberi-702eb2e7\n\nTool utilizzati: Dataset Query Tool"
+  - "La CO₂ sequestrata è 1.250 kg CO2\n\nCalcolo basato su DBH 30cm, altezza 15m, densità legno 0.56 g/cm³.\n\n📚 Fonti scientifiche:\n- Chave et al. (2014) - AGB equation: https://www.researchgate.net/publication/262197290\n- Carbon Content of Tree Tissues: https://www.researchgate.net/publication/259443596\n\nTool utilizzati: CO2 Calculation Tool"
+  - "Il volume stimato è 2,5 m³\n\nCalcolo con formula V = a * D² * H\n\n📚 Fonte: Allometric relationships for volume and biomass for stone pine\nhttps://www.researchgate.net/publication/256199126\n\nTool utilizzati: General Volume Tool"
+  - "La biomassa fogliare è 45,3 kg\n\nFormula: Leaf = e^(-7.21) * (D² * H)^0.6 * age^3.2 * 1.28\n\n📚 Fonte: Development of Allometric Equations for Argan Trees\nhttps://www.researchgate.net/publication/380957635\n\nTool utilizzati: Leaf Biomass Tool"
 
 If a computation is needed but measurements are missing, state the short requirement in one line, then ask for the needed values in the next lines.
 

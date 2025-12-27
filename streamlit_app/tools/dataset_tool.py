@@ -76,6 +76,25 @@ class DatasetQueryTool(BaseTool):
     _embeddings: Any = None
     _table_name: str = "baumkatogd"
     _user_description: str = ""
+    _dataset_source: Dict[str, Any] = {}
+    
+    # Known dataset sources for open data
+    DATASET_SOURCES: Dict[str, Dict[str, Any]] = {
+        "baumkatogd": {
+            "name": "Vienna Tree Cadastre (Baumkataster der Stadt Wien)",
+            "provider": "City of Vienna - Open Data",
+            "url": "https://www.data.gv.at/katalog/dataset/stadt-wien_baumkatasterderstadtwien",
+            "license": "Creative Commons Attribution 4.0 (CC BY 4.0)",
+            "description": "Public tree inventory of the City of Vienna"
+        },
+        "dataset_milano": {
+            "name": "Censimento Alberi del Comune di Milano",
+            "provider": "Comune di Milano - Open Data",
+            "url": "https://dati.comune.milano.it/dataset/ds447-infogeo-aree-verdi-alberi-702eb2e7",
+            "license": "Creative Commons Attribution 4.0 (CC BY 4.0)",
+            "description": "Inventario degli alberi pubblici del Comune di Milano"
+        }
+    }
 
     def __init__(
         self, 
@@ -104,9 +123,38 @@ class DatasetQueryTool(BaseTool):
         # Initialize embeddings for vector search (lazy initialization)
         object.__setattr__(self, "_embeddings", embeddings)
         
+        # Set dataset source based on table name or db path
+        dataset_source = self._determine_dataset_source(db_path, table_name)
+        object.__setattr__(self, "_dataset_source", dataset_source)
+        
         # Update description if custom dataset is used
         if table_name and table_name != "baumkatogd":
             self._update_description_for_custom_dataset()
+    
+    def _determine_dataset_source(self, db_path: Path, table_name: Optional[str]) -> Dict[str, Any]:
+        """Determine the data source based on database path or table name."""
+        # Check if it's the Milano dataset
+        if db_path and "milano" in str(db_path).lower():
+            return self.DATASET_SOURCES.get("dataset_milano", {})
+        
+        # Check table name for known datasets
+        if table_name:
+            table_lower = table_name.lower()
+            if "milano" in table_lower or table_lower == "milano_trees":
+                return self.DATASET_SOURCES.get("dataset_milano", {})
+            elif table_lower == "baumkatogd":
+                return self.DATASET_SOURCES.get("baumkatogd", {})
+        
+        # Default to Vienna if using default db
+        if db_path and "BAUMKATOGD" in str(db_path):
+            return self.DATASET_SOURCES.get("baumkatogd", {})
+        
+        # Custom dataset - no known source
+        return {
+            "name": "Custom Dataset",
+            "provider": "User uploaded",
+            "description": "Custom dataset uploaded by user"
+        }
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
@@ -408,6 +456,10 @@ Now translate this question:
             
             # Add the original query to the result
             result["natural_query"] = natural_query
+            
+            # Add data source information
+            if self._dataset_source:
+                result["data_source"] = self._dataset_source
             
             return result
             
