@@ -6,10 +6,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install system deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# Install system deps (split to avoid parallel build issues)
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends curl build-essential
+RUN rm -rf /var/lib/apt/lists/*
 
 # Install deps
 COPY requirements.txt ./

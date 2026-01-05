@@ -9,13 +9,10 @@ WORKDIR /app
 # Set PYTHONPATH after WORKDIR so /app exists
 ENV PYTHONPATH=/app:$PYTHONPATH
 
-# Install system dependencies (including gcc for pandas/numpy compilation)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    gcc \
-    g++ \
-    build-essential && \
-    rm -rf /var/lib/apt/lists/*
+# Install system dependencies (split to avoid parallel build issues)
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends curl gcc g++ build-essential
+RUN rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt ./

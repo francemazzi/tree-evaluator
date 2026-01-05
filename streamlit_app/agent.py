@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Annotated, List, Literal, Optional, Sequence, TypedDict, Any, Dict
+import time
+from dataclasses import dataclass, field
+from typing import Annotated, List, Literal, Optional, Sequence, TypedDict, Any, Dict, Tuple
 from pathlib import Path
 import re
 from decimal import Decimal, InvalidOperation
@@ -18,6 +20,7 @@ from streamlit_app.llm.factory import LlmFactory, LlmProvider, LlmSettings, LlmS
 from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
+from streamlit_app.tools.co2_aggregate_tool import CO2AggregateTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
 from streamlit_app.tools.heyer_volume_tool import HeyerVolumeTool
@@ -39,6 +42,199 @@ from streamlit_app.tools.paper_search_tool import PaperSearchTool
 load_dotenv()
 
 
+@dataclass
+class AgentBudget:
+    """Budget constraints for agent execution to prevent infinite loops and runaway costs.
+    
+    This class tracks resource usage during agent execution and enforces limits on:
+    - Total tool calls across all tools
+    - Calls per individual tool
+    - LLM invocations
+    - Execution time
+    - Replan attempts
+    """
+    
+    # Budget limits (configurable)
+    max_total_tool_calls: int = 15          # Hard limit on total tool calls
+    max_calls_per_tool: int = 3             # Max calls to same tool
+    max_llm_calls: int = 10                 # Max LLM invocations
+    max_execution_time_seconds: int = 120   # Timeout in seconds
+    max_replans: int = 2                    # Max replan attempts
+    
+    # Runtime counters
+    tool_calls: Dict[str, int] = field(default_factory=dict)
+    total_tool_calls: int = 0
+    llm_calls: int = 0
+    start_time: float = field(default_factory=time.time)
+    replans: int = 0
+    
+    def can_call_tool(self, tool_name: str) -> Tuple[bool, str]:
+        """Check if we can call a specific tool.
+        
+        Args:
+            tool_name: Name of the tool to check.
+            
+        Returns:
+            Tuple of (can_call, reason_if_blocked).
+        """
+        # Check timeout
+        elapsed = time.time() - self.start_time
+        if elapsed > self.max_execution_time_seconds:
+            return False, f"Timeout: {elapsed:.1f}s exceeded limit of {self.max_execution_time_seconds}s"
+        
+        # Check total tool calls
+        if self.total_tool_calls >= self.max_total_tool_calls:
+            return False, f"Total tool call limit reached: {self.total_tool_calls}/{self.max_total_tool_calls}"
+        
+        # Check per-tool limit
+        current_count = self.tool_calls.get(tool_name, 0)
+        if current_count >= self.max_calls_per_tool:
+            return False, f"Tool '{tool_name}' limit reached: {current_count}/{self.max_calls_per_tool} calls"
+        
+        return True, ""
+    
+    def record_tool_call(self, tool_name: str) -> None:
+        """Record a tool call."""
+        self.tool_calls[tool_name] = self.tool_calls.get(tool_name, 0) + 1
+        self.total_tool_calls += 1
+    
+    def can_call_llm(self) -> Tuple[bool, str]:
+        """Check if we can make another LLM call."""
+        if self.llm_calls >= self.max_llm_calls:
+            return False, f"LLM call limit reached: {self.llm_calls}/{self.max_llm_calls}"
+        return True, ""
+    
+    def record_llm_call(self) -> None:
+        """Record an LLM call."""
+        self.llm_calls += 1
+    
+    def can_replan(self) -> Tuple[bool, str]:
+        """Check if we can attempt another replan."""
+        if self.replans >= self.max_replans:
+            return False, f"Replan limit reached: {self.replans}/{self.max_replans}"
+        return True, ""
+    
+    def record_replan(self) -> None:
+        """Record a replan attempt."""
+        self.replans += 1
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get current budget status for debugging/logging."""
+        elapsed = time.time() - self.start_time
+        return {
+            "total_tool_calls": f"{self.total_tool_calls}/{self.max_total_tool_calls}",
+            "llm_calls": f"{self.llm_calls}/{self.max_llm_calls}",
+            "replans": f"{self.replans}/{self.max_replans}",
+            "elapsed_time": f"{elapsed:.1f}s/{self.max_execution_time_seconds}s",
+            "per_tool_calls": dict(self.tool_calls),
+        }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize budget to dict for state storage."""
+        return {
+            "max_total_tool_calls": self.max_total_tool_calls,
+            "max_calls_per_tool": self.max_calls_per_tool,
+            "max_llm_calls": self.max_llm_calls,
+            "max_execution_time_seconds": self.max_execution_time_seconds,
+            "max_replans": self.max_replans,
+            "tool_calls": dict(self.tool_calls),
+            "total_tool_calls": self.total_tool_calls,
+            "llm_calls": self.llm_calls,
+            "start_time": self.start_time,
+            "replans": self.replans,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentBudget":
+        """Deserialize budget from dict."""
+        budget = cls(
+            max_total_tool_calls=data.get("max_total_tool_calls", 15),
+            max_calls_per_tool=data.get("max_calls_per_tool", 3),
+            max_llm_calls=data.get("max_llm_calls", 10),
+            max_execution_time_seconds=data.get("max_execution_time_seconds", 120),
+            max_replans=data.get("max_replans", 2),
+        )
+        budget.tool_calls = dict(data.get("tool_calls", {}))
+        budget.total_tool_calls = data.get("total_tool_calls", 0)
+        budget.llm_calls = data.get("llm_calls", 0)
+        budget.start_time = data.get("start_time", time.time())
+        budget.replans = data.get("replans", 0)
+        return budget
+
+
+class BudgetAwareToolGuard:
+    """Circuit breaker that enforces budget limits before tool execution.
+    
+    This guard checks budget constraints before each tool call and prevents
+    execution if limits are exceeded, returning a user-friendly error message.
+    """
+    
+    def __init__(self, budget: AgentBudget):
+        self._budget = budget
+    
+    def check_before_tools(self, messages: Sequence[BaseMessage]) -> Tuple[bool, str, Dict[str, Any]]:
+        """Check budget before tool execution.
+        
+        Args:
+            messages: Current conversation messages.
+            
+        Returns:
+            Tuple of (can_proceed, error_message, budget_status).
+        """
+        # Extract pending tool calls from last AI message
+        last_ai = None
+        for msg in reversed(list(messages)):
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                last_ai = msg
+                break
+        
+        if not last_ai or not last_ai.tool_calls:
+            return True, "", self._budget.get_status()
+        
+        # Check each tool call against budget
+        for tc in last_ai.tool_calls:
+            tool_name = tc.get("name", "unknown")
+            can_call, reason = self._budget.can_call_tool(tool_name)
+            
+            if not can_call:
+                error_msg = self._build_budget_error_response(reason, tool_name)
+                return False, error_msg, self._budget.get_status()
+            
+            # Record the call (pre-emptively)
+            self._budget.record_tool_call(tool_name)
+        
+        return True, "", self._budget.get_status()
+    
+    def check_before_llm(self) -> Tuple[bool, str]:
+        """Check budget before LLM call."""
+        can_call, reason = self._budget.can_call_llm()
+        if can_call:
+            self._budget.record_llm_call()
+        return can_call, reason
+    
+    def _build_budget_error_response(self, reason: str, tool_name: str) -> str:
+        """Build user-friendly error message when budget is exceeded."""
+        status = self._budget.get_status()
+        tools_used = ', '.join(status['per_tool_calls'].keys()) or 'Nessuno'
+        
+        return f"""⚠️ **Limite di esecuzione raggiunto**
+
+{reason}
+
+**Stato attuale:**
+- Tool calls totali: {status['total_tool_calls']}
+- Chiamate LLM: {status['llm_calls']}
+- Tempo trascorso: {status['elapsed_time']}
+- Tool più usato: {tool_name}
+
+**Suggerimenti:**
+- Riformula la domanda in modo più specifico
+- Suddividi la richiesta in domande più semplici
+- Chiedi direttamente il risultato senza elaborazioni complesse
+
+Tool utilizzati: {tools_used}"""
+
+
 class AgentState(TypedDict):
     """State for the LangGraph agent."""
 
@@ -58,6 +254,10 @@ class AgentState(TypedDict):
     tool_loop_replan_count: Optional[int]  # Number of replans attempted after loop detection
     total_tool_calls: Optional[int]  # Total number of tool calls in this run (for global limit)
     tool_call_counts: Optional[Dict[str, int]]  # Count of calls per tool name (for detecting repeated tool abuse)
+    # Budget tracking for preventing infinite loops
+    budget: Optional[Dict[str, Any]]  # Serialized AgentBudget state
+    budget_exceeded: Optional[bool]  # True if budget limits were hit
+    budget_status: Optional[Dict[str, Any]]  # Current budget status for debugging
 
 
 class TreeEvaluatorAgent:
@@ -190,6 +390,30 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             embeddings=self._embeddings,
         )
         
+        # Initialize CO2AggregateTool
+        if custom_db_path and custom_table_name:
+            co2_aggregate_tool = CO2AggregateTool(
+                db_path=custom_db_path,
+                table_name=custom_table_name,
+                dataset_type="custom",
+                llm=self._base_llm
+            )
+        elif dataset_preset in self.DATASET_PRESETS:
+            preset = self.DATASET_PRESETS[dataset_preset]
+            db_path = Path(__file__).parent.parent / preset["db_path"]
+            co2_aggregate_tool = CO2AggregateTool(
+                db_path=db_path,
+                table_name=preset["table_name"],
+                dataset_type=dataset_preset,
+                llm=self._base_llm
+            )
+        else:
+            # Default Vienna
+            co2_aggregate_tool = CO2AggregateTool(
+                dataset_type="vienna",
+                llm=self._base_llm
+            )
+
         # Initialize tools with LLM
         # Initialize MapGenerationTool with appropriate database for dataset preset
         if custom_db_path and custom_table_name:
@@ -209,6 +433,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         
         self._tools = [
             CO2CalculationTool(),
+            co2_aggregate_tool,
             EnvironmentEstimationTool(),
             dataset_tool,
             species_list_tool,
@@ -235,12 +460,13 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         self._graph = self._build_graph()
 
     def _build_graph(self) -> StateGraph:
-        """Build the LangGraph workflow with query optimization and validation."""
+        """Build the LangGraph workflow with query optimization, validation, and budget enforcement."""
         workflow = StateGraph(AgentState)
 
         # Define nodes
         workflow.add_node("context_manager", self._manage_context)
         workflow.add_node("query_optimizer", self._optimize_query)
+        workflow.add_node("budget_check", self._check_budget)  # Budget enforcement before tools
         workflow.add_node("agent", self._call_model)
         workflow.add_node("tools", ToolNode(self._tools))
         workflow.add_node("tool_loop_guard", self._guard_tool_loop)
@@ -257,13 +483,23 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         # Query optimizer -> agent
         workflow.add_edge("query_optimizer", "agent")
 
-        # Agent decides: continue to tools or validate
+        # Agent decides: continue to budget check (before tools) or validate
         workflow.add_conditional_edges(
             "agent",
             self._should_continue,
             {
-                "continue": "tools",
+                "continue": "budget_check",  # Check budget before tools
                 "validate": "validator",
+            },
+        )
+
+        # Budget check decides: proceed to tools or stop
+        workflow.add_conditional_edges(
+            "budget_check",
+            self._should_continue_after_budget,
+            {
+                "continue": "tools",
+                "stop": END,
             },
         )
 
@@ -294,6 +530,162 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         workflow.add_edge("retry_counter", "agent")
 
         return workflow.compile()
+
+    def _check_budget(self, state: AgentState) -> dict:
+        """Check budget constraints before tool execution.
+        
+        This node acts as a circuit breaker, preventing tool execution
+        if budget limits are exceeded. When limit is reached, it generates
+        a conversational response using the results already obtained.
+        """
+        messages = state.get("messages") or []
+        
+        # Restore or create budget
+        budget_data = state.get("budget")
+        if budget_data:
+            budget = AgentBudget.from_dict(budget_data)
+        else:
+            budget = AgentBudget()
+        
+        # Create guard and check
+        guard = BudgetAwareToolGuard(budget)
+        can_proceed, error_msg, status = guard.check_before_tools(messages)
+        
+        if not can_proceed:
+            # Budget exceeded - generate conversational response with collected results
+            conversational_response = self._generate_conversational_summary(messages, status)
+            return {
+                "messages": [AIMessage(content=conversational_response)],
+                "budget": budget.to_dict(),
+                "budget_exceeded": True,
+                "budget_status": status,
+            }
+        
+        return {
+            "budget": budget.to_dict(),
+            "budget_exceeded": False,
+            "budget_status": status,
+        }
+    
+    def _generate_conversational_summary(self, messages: Sequence[BaseMessage], budget_status: Dict[str, Any]) -> str:
+        """Generate a conversational response summarizing the results collected so far.
+        
+        Instead of just showing "budget exceeded", this method extracts all tool results
+        and creates a human-friendly summary.
+        """
+        from langchain_core.messages import ToolMessage
+        
+        # Extract user's original question
+        user_question = ""
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                user_question = msg.content
+        
+        # Extract all tool results
+        tool_results = []
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                tool_name = getattr(msg, "name", "unknown")
+                content = msg.content
+                
+                # Try to parse JSON content
+                try:
+                    if isinstance(content, str):
+                        import ast
+                        try:
+                            parsed = json.loads(content)
+                        except json.JSONDecodeError:
+                            parsed = ast.literal_eval(content)
+                        tool_results.append({"tool": tool_name, "result": parsed})
+                    elif isinstance(content, dict):
+                        tool_results.append({"tool": tool_name, "result": content})
+                except Exception:
+                    tool_results.append({"tool": tool_name, "result": str(content)[:500]})
+        
+        if not tool_results:
+            # No results yet, return simple message
+            return (
+                "Non ho ancora raccolto abbastanza dati per rispondere completamente.\n\n"
+                "**Suggerimento:** Prova a riformulare la domanda in modo più specifico.\n\n"
+                "Tool utilizzati: Nessuno"
+            )
+        
+        # Build summary based on tool type
+        tools_used = list(set(r["tool"] for r in tool_results))
+        
+        # Try to generate a conversational summary using LLM
+        try:
+            summary_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=0.7)
+            
+            # Format results for summary
+            results_text = ""
+            for tr in tool_results[:5]:  # Limit to 5 results
+                tool = tr["tool"]
+                result = tr["result"]
+                if isinstance(result, dict):
+                    # Extract key values
+                    if "co2_stock_t" in result:
+                        results_text += f"- CO2 stock: {result.get('co2_stock_t', 'N/A')} tonnellate\n"
+                    if "total_biomass_t" in result:
+                        results_text += f"- Biomassa totale: {result.get('total_biomass_t', 'N/A')} tonnellate\n"
+                    if "agb_t" in result:
+                        results_text += f"- Biomassa epigea: {result.get('agb_t', 'N/A')} tonnellate\n"
+                    if "results" in result and isinstance(result["results"], list):
+                        results_text += f"- Trovati {len(result['results'])} risultati nel dataset\n"
+                    if "result" in result:
+                        results_text += f"- Valore: {result.get('result', 'N/A')}\n"
+            
+            if not results_text:
+                results_text = json.dumps(tool_results[0].get("result", {}), indent=2, ensure_ascii=False)[:500]
+            
+            summary_prompt = f"""Genera una risposta conversazionale e amichevole in italiano.
+
+Domanda dell'utente: {user_question}
+
+Risultati raccolti dai tool:
+{results_text}
+
+Tool utilizzati: {', '.join(tools_used)}
+
+ISTRUZIONI:
+1. Rispondi in modo naturale e conversazionale
+2. Usa i dati forniti per rispondere alla domanda
+3. Se i dati sono incompleti, spiega cosa hai trovato e cosa manca
+4. Includi le unità di misura appropriate
+5. Termina con "Tool utilizzati: [lista tool]"
+6. NON inventare dati che non sono nei risultati
+
+Risposta:"""
+            
+            response = summary_llm.invoke([HumanMessage(content=summary_prompt)])
+            summary = response.content.strip()
+            
+            # Ensure tool citation is present
+            if "Tool utilizzati" not in summary:
+                summary += f"\n\nTool utilizzati: {', '.join(tools_used)}"
+            
+            return summary
+            
+        except Exception as e:
+            # Fallback to basic summary if LLM fails
+            summary = f"**Risultati raccolti per:** {user_question}\n\n"
+            
+            for tr in tool_results[:3]:
+                result = tr.get("result", {})
+                if isinstance(result, dict):
+                    if "co2_stock_t" in result:
+                        summary += f"- **CO2 stock:** {result.get('co2_stock_t', 'N/A')} t CO2\n"
+                    if "total_biomass_t" in result:
+                        summary += f"- **Biomassa totale:** {result.get('total_biomass_t', 'N/A')} t\n"
+            
+            summary += f"\n\nTool utilizzati: {', '.join(tools_used)}"
+            return summary
+
+    def _should_continue_after_budget(self, state: AgentState) -> Literal["continue", "stop"]:
+        """Determine if we should continue to tools or stop due to budget."""
+        if state.get("budget_exceeded", False):
+            return "stop"
+        return "continue"
 
     def _guard_tool_loop(self, state: AgentState) -> dict:
         messages = state.get("messages") or []
@@ -330,57 +722,11 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
             
             # If tool called 10+ times OR we've already tried 3+ replans, FORCE STOP
             if call_count >= 10 or replan_count >= 3:
-                # Extract papers found from ToolMessages
-                papers_found = self._extract_papers_from_messages(messages)
-                
-                # Build response with sources
-                fallback_response = (
-                    f"Ho cercato su arXiv informazioni sulla formula per l'assorbimento del carbonio. "
-                    f"Ecco cosa ho trovato dopo {call_count} ricerche:\n\n"
-                )
-                
-                if papers_found:
-                    # Check if we have actual papers or just errors
-                    real_papers = [p for p in papers_found if p.get("source") != "error"]
-                    error_papers = [p for p in papers_found if p.get("source") == "error"]
-                    
-                    if real_papers:
-                        fallback_response += "**📚 Paper trovati su arXiv:**\n\n"
-                        for i, paper in enumerate(real_papers[:5], 1):  # Max 5 papers
-                            title = paper.get("title", "Titolo non disponibile")
-                            authors = paper.get("authors", "Autori non disponibili")
-                            link = paper.get("link", "")
-                            abstract = paper.get("abstract", "")
-                            if abstract and len(abstract) > 200:
-                                abstract = abstract[:200] + "..."
-                            
-                            fallback_response += f"{i}. **{title}**\n"
-                            if authors and authors != "N/A":
-                                fallback_response += f"   - Autori: {authors}\n"
-                            if abstract:
-                                fallback_response += f"   - Abstract: {abstract}\n"
-                            if link:
-                                fallback_response += f"   - 🔗 [Link al paper]({link})\n"
-                            fallback_response += "\n"
-                    elif error_papers:
-                        fallback_response += f"*⚠️ Errore durante la ricerca su arXiv: {error_papers[0].get('abstract', 'errore sconosciuto')}*\n\n"
-                    else:
-                        fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
-                else:
-                    fallback_response += "*Non ho trovato paper specifici con formule esatte.*\n\n"
-                
-                fallback_response += (
-                    "**📐 Formule standard per il calcolo del carbonio:**\n\n"
-                    "1. **Formula base**: CO₂ = Biomassa × 0.47 × 3.67\n"
-                    "   - Biomassa: peso secco dell'albero in kg\n"
-                    "   - 0.47: frazione di carbonio nella biomassa\n"
-                    "   - 3.67: fattore di conversione C → CO₂\n\n"
-                    "2. **Formula allometrica**: Biomassa = a × DBH^b × H^c\n"
-                    "   - DBH: diametro a petto d'uomo (cm)\n"
-                    "   - H: altezza (m)\n"
-                    "   - a, b, c: coefficienti specie-specifici\n\n"
-                    "Posso calcolare il CO₂ per un albero specifico se mi dai DBH e altezza. Vuoi provare?\n\n"
-                    "Tool utilizzati: Paper Search Tool"
+                # Build dynamic fallback response based on which tool was abused
+                fallback_response = self._build_dynamic_fallback_response(
+                    abused_tool=abused_tool,
+                    call_count=call_count,
+                    messages=messages
                 )
                 return {
                     "messages": [AIMessage(content=fallback_response)],
@@ -548,6 +894,110 @@ Scrivi ORA una risposta all'utente che:
     def _increment_retry_count(self, state: AgentState) -> dict:
         current = int(state.get("retry_count") or 0)
         return {"retry_count": current + 1}
+
+    def _build_dynamic_fallback_response(
+        self, 
+        abused_tool: str, 
+        call_count: int, 
+        messages: Sequence[BaseMessage]
+    ) -> str:
+        """Build a dynamic fallback response when tool loop limit is reached.
+        
+        This method generates context-aware responses based on which tool was
+        being called repeatedly, avoiding hardcoded formulas or domain-specific content.
+        
+        Args:
+            abused_tool: Name of the tool that was called too many times.
+            call_count: Number of times the tool was called.
+            messages: Current conversation messages.
+            
+        Returns:
+            User-friendly fallback response.
+        """
+        # Map tool names to user-friendly descriptions
+        tool_descriptions = {
+            "search_scientific_papers": "ricerca di paper scientifici",
+            "query_tree_dataset": "interrogazione del dataset",
+            "calculate_co2_sequestration": "calcolo del sequestro di CO2",
+            "calculate_co2_aggregate": "calcolo aggregato CO2 (dataset)",
+            "estimate_environment": "stima ambientale",
+            "generate_chart": "generazione di grafici",
+            "generate_map": "generazione di mappe",
+            "query_species_list": "ricerca nella lista delle specie",
+        }
+        
+        tool_desc = tool_descriptions.get(abused_tool, f"utilizzo del tool {abused_tool}")
+        
+        # Start with generic message
+        fallback_response = (
+            f"⚠️ **Limite di ricerca raggiunto**\n\n"
+            f"Ho eseguito {call_count} tentativi di {tool_desc} senza trovare una risposta definitiva.\n\n"
+        )
+        
+        # For paper search, try to extract and show found papers
+        if abused_tool == "search_scientific_papers":
+            papers_found = self._extract_papers_from_messages(messages)
+            
+            if papers_found:
+                real_papers = [p for p in papers_found if p.get("source") != "error"]
+                error_papers = [p for p in papers_found if p.get("source") == "error"]
+                
+                if real_papers:
+                    fallback_response += "**📚 Paper trovati:**\n\n"
+                    for i, paper in enumerate(real_papers[:5], 1):
+                        title = paper.get("title", "Titolo non disponibile")
+                        authors = paper.get("authors", "")
+                        link = paper.get("link", "")
+                        abstract = paper.get("abstract", "")
+                        if abstract and len(abstract) > 200:
+                            abstract = abstract[:200] + "..."
+                        
+                        fallback_response += f"{i}. **{title}**\n"
+                        if authors and authors != "N/A":
+                            fallback_response += f"   - Autori: {authors}\n"
+                        if abstract:
+                            fallback_response += f"   - Abstract: {abstract}\n"
+                        if link:
+                            fallback_response += f"   - 🔗 [Link al paper]({link})\n"
+                        fallback_response += "\n"
+                elif error_papers:
+                    error_msg = error_papers[0].get("abstract", "errore sconosciuto")
+                    fallback_response += f"*⚠️ Errore durante la ricerca: {error_msg}*\n\n"
+                else:
+                    fallback_response += "*Non ho trovato risultati specifici per la tua query.*\n\n"
+            else:
+                fallback_response += "*Non ho trovato risultati specifici per la tua query.*\n\n"
+        
+        # For dataset queries, show what was found
+        elif abused_tool == "query_tree_dataset":
+            fallback_response += (
+                "**Suggerimenti:**\n"
+                "- Prova a riformulare la domanda in modo più specifico\n"
+                "- Verifica che i nomi delle colonne siano corretti\n"
+                "- Chiedi prima la struttura del dataset con \"Mostrami le colonne disponibili\"\n\n"
+            )
+        
+        # Generic suggestions for other tools
+        else:
+            fallback_response += (
+                "**Cosa puoi fare:**\n"
+                "- Riformula la domanda in modo più specifico\n"
+                "- Suddividi la richiesta in domande più semplici\n"
+                "- Chiedi informazioni più mirate\n\n"
+            )
+        
+        # Add available tools suggestion
+        fallback_response += (
+            "**Altri tool disponibili:**\n"
+            "- 📊 Analisi dataset (query, statistiche, grafici)\n"
+            "- 🌳 Calcoli forestali (CO2, biomassa, volume)\n"
+            "- 🗺️ Mappe interattive (solo dataset con coordinate GPS)\n"
+            "- 📚 Ricerca paper scientifici\n\n"
+            "Posso aiutarti con qualcosa di specifico?\n\n"
+            f"Tool utilizzati: {abused_tool.replace('_', ' ').title()}"
+        )
+        
+        return fallback_response
 
     def _extract_papers_from_messages(self, messages: Sequence[BaseMessage]) -> List[dict]:
         """Extract paper results from ToolMessages for search_scientific_papers."""
@@ -889,7 +1339,10 @@ Scrivi ORA una risposta all'utente che:
         }
 
     def _optimize_query(self, state: AgentState) -> dict:
-        """Optimize user query and break it into tasks."""
+        """Optimize user query and break it into tasks.
+        
+        Simplified to create fewer tasks and avoid over-complication.
+        """
         messages = state["messages"]
         
         # Get the last user message
@@ -902,75 +1355,32 @@ Scrivi ORA una risposta all'utente che:
         if not last_user_msg:
             return {"optimized_query": None, "tasks": []}
         
-        # Use LLM to optimize query and create tasks
-        optimizer_prompt = f"""Analizza la seguente domanda dell'utente e:
-1. Riformulala in modo più chiaro e specifico
-2. Scomponila in task GRANULARI e specifici (minimo 3-5 task, anche 6-8 se la domanda è complessa)
+        # For simple/short queries, skip optimization to save time
+        if len(last_user_msg) < 50:
+            return {
+                "optimized_query": last_user_msg,
+                "tasks": [last_user_msg],
+            }
+        
+        # Use LLM to optimize query and create tasks (simplified prompt)
+        optimizer_prompt = f"""Analizza la seguente domanda e crea 2-3 task semplici.
 
-IMPORTANTE: Crea sempre MULTIPLI sottotask dettagliati, non un singolo task generico.
+Domanda: {last_user_msg}
 
-Domanda originale: {last_user_msg}
+Rispondi SOLO in formato JSON:
+{{
+    "optimized_query": "domanda riformulata brevemente",
+    "tasks": ["task 1", "task 2"]
+}}
 
-Rispondi in formato JSON con:
-- "optimized_query": la domanda ottimizzata
-- "tasks": lista di sottotask specifici e granulari (MINIMO 3-5 task, anche di più se necessario)
+REGOLE:
+- Massimo 3 task
+- Task brevi e diretti
+- Se la domanda è già chiara, restituisci la domanda originale con 1 task
 
 Esempi:
-
-Esempio 1 - Calcolo CO2:
-{{
-    "optimized_query": "Calcola il sequestro di CO2 per un albero di Acer di 30cm DBH e 15m altezza",
-    "tasks": [
-        "1. Identificare la specie (Acer) nel database delle densità",
-        "2. Recuperare la densità del legno appropriata per Acer (0.56 g/cm³)",
-        "3. Calcolare il volume dell'albero usando DBH (30cm) e altezza (15m)",
-        "4. Calcolare la biomassa totale (volume × densità)",
-        "5. Stimare il sequestro di CO2 dalla biomassa",
-        "6. Presentare i risultati con unità di misura (kg CO2, kg biomassa, m³ volume)"
-    ]
-}}
-
-Esempio 2 - Grafico:
-{{
-    "optimized_query": "Crea un grafico a torta che mostri la distribuzione dei diametri degli alberi a Vienna",
-    "tasks": [
-        "1. Interrogare il dataset Vienna Trees per ottenere tutti i diametri (DBH)",
-        "2. Analizzare la distribuzione dei valori per definire categorie appropriate",
-        "3. Raggruppare i dati in categorie di diametro (es. 0-20cm, 20-40cm, 40-60cm, >60cm)",
-        "4. Contare il numero di alberi per ogni categoria",
-        "5. Generare un grafico a torta usando il chart tool",
-        "6. Verificare che le etichette mostrino percentuali e conteggi"
-    ]
-}}
-
-Esempio 3 - Query Dataset Complessa:
-{{
-    "optimized_query": "Trova le 10 specie più comuni a Vienna e conta quanti alberi ci sono per ciascuna",
-    "tasks": [
-        "1. Interrogare il dataset per verificare la struttura della tabella",
-        "2. Estrarre tutte le specie presenti nel dataset",
-        "3. Raggruppare i dati per specie",
-        "4. Contare il numero di alberi per ogni specie",
-        "5. Ordinare per numero di alberi in ordine decrescente",
-        "6. Selezionare le prime 10 specie",
-        "7. Formattare i risultati con nome specie e conteggio"
-    ]
-}}
-
-Esempio 4 - Rapporto Ipogeo/Epigeo:
-{{
-    "optimized_query": "Calcola il rapporto ipogeo/epigeo delle conifere nel dataset",
-    "tasks": [
-        "1. Interrogare il dataset per identificare tutte le conifere presenti",
-        "2. Cercare nel dataset dei rapporti R/S specifici per conifere",
-        "3. Se disponibili, estrarre i valori medi di R/S per genere/specie",
-        "4. Se non disponibili, usare il valore standard R/S = 0.24 per conifere temperate",
-        "5. Calcolare la media ponderata se ci sono più specie",
-        "6. Presentare il risultato con unità di misura e riferimenti ai tool usati"
-    ]
-}}
-
-REGOLA CRITICA: Scomponi SEMPRE la domanda in 3-8 sottotask specifici. NON creare un singolo task generico."""
+- "Quanti pini ci sono?" → {{"optimized_query": "Conta i pini nel dataset", "tasks": ["Cercare pini nel dataset", "Contare risultati"]}}
+- "Calcola CO2 per un albero di 30cm" → {{"optimized_query": "Calcola CO2 per DBH 30cm", "tasks": ["Calcolare CO2 con DBH 30cm"]}}"""
         
         try:
             optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
@@ -1015,6 +1425,24 @@ Task da completare:
     def _call_model(self, state: AgentState) -> dict:
         """Call the LLM model."""
         messages = state["messages"]
+        
+        # Check timeout before calling LLM
+        budget_data = state.get("budget")
+        if budget_data:
+            budget = AgentBudget.from_dict(budget_data)
+            elapsed = time.time() - budget.start_time
+            if elapsed > budget.max_execution_time_seconds:
+                timeout_response = (
+                    f"⚠️ **Timeout raggiunto** ({elapsed:.0f}s)\n\n"
+                    "La richiesta ha impiegato troppo tempo. "
+                    "Prova a riformulare la domanda in modo più specifico.\n\n"
+                    "**Suggerimenti:**\n"
+                    "- Per calcoli CO2: specifica DBH (cm) e altezza (m)\n"
+                    "- Per query dataset: chiedi qualcosa di semplice come \"quanti pini ci sono?\"\n"
+                    "- Per grafici: specifica il tipo di grafico desiderato\n\n"
+                    "Tool utilizzati: Nessuno (timeout)"
+                )
+                return {"messages": [AIMessage(content=timeout_response)]}
 
         # Add system message if not present
         if not any(isinstance(m, SystemMessage) for m in messages):
@@ -1022,8 +1450,9 @@ Task da completare:
                 content="""You are a helpful tree evaluation assistant with access to:
 
 1. **CO2 Calculation Tool**: Calculate CO2 sequestration and biomass for individual trees given their measurements.
-2. **Environmental Estimation Tool**: Compute volume, biomass, and carbon stock using alternative formulas.
-3. **Dataset Query Tool**: Query a real Vienna trees dataset (BAUMKATOGD) with filtering, aggregation, and statistics.
+2. **CO2 Aggregate Tool**: Calculate TOTAL/AVERAGE CO2 and biomass for a group of trees (by species, district, etc.) or the whole dataset. Use this for questions like "total CO2 for pines" or "stock di carbonio".
+3. **Environmental Estimation Tool**: Compute volume, biomass, and carbon stock using alternative formulas.
+4. **Dataset Query Tool**: Query a real Vienna trees dataset (BAUMKATOGD) with filtering, aggregation, and statistics.
 4. **Chart Generation Tool**: Create interactive visualizations (bar, pie, line, scatter, histogram, box plots) from the dataset.
 5. **Map Generation Tool**: Create interactive maps showing tree locations (markers, clusters, heatmaps). ONLY available for Milano dataset which has GPS coordinates.
 6. **Advanced Biomass & Volume Equations**: Calculate Volume (Heyer, General, Simplified), Biomass (Leaf, Stem, Root, Total), and Allometric Relations using specific scientific formulas.
@@ -1031,7 +1460,8 @@ Task da completare:
 8. **Paper Search Tool**: Search arXiv and PubMed for scientific papers. Returns title, authors, abstract, and link to each paper.
 
 Guidelines:
-- When users ask about CO2 or carbon sequestration for specific measurements, use the CO2 calculation tool.
+- When users ask about CO2 or carbon sequestration for specific measurements (single tree), use the CO2 calculation tool.
+- When users ask about aggregate CO2 (total, average, stock) for the dataset or specific groups (e.g. "pines"), use the CO2 Aggregate Tool.
 - When users ask about the dataset (counts, species, districts, statistics), use the dataset query tool.
 - When users ask for botanical context about plant species (family/order/class, species code, growth form, leaf type, synonyms), use the species list query tool.
 - When users ask to create, visualize, or show charts/graphs, use the chart generation tool.
@@ -1362,7 +1792,7 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         """Determine if we should retry or complete based on validation."""
         validation_result = state.get("validation_result", {})
         retry_count = int(state.get("retry_count") or 0)
-        max_retries = 2
+        max_retries = 1  # Reduced from 2 to prevent long validation loops
         
         # Check if response is complete
         is_complete = validation_result.get("is_complete", True)
@@ -1395,7 +1825,10 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         # Add current message
         messages.append(HumanMessage(content=message))
 
-        # Run graph
+        # Initialize fresh budget for this request
+        initial_budget = AgentBudget()
+        
+        # Run graph with reduced recursion limit for safety
         result = self._graph.invoke(
             {
                 "messages": messages,
@@ -1408,8 +1841,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                 "tool_loop_replan_count": 0,
                 "total_tool_calls": 0,
                 "tool_call_counts": {},
+                "budget": initial_budget.to_dict(),
+                "budget_exceeded": False,
+                "budget_status": None,
             },
-            config={"recursion_limit": 80},
+            config={"recursion_limit": 30},  # Reduced from 80 for safety
         )
 
         # Extract final response
@@ -1446,9 +1882,12 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
         # Track execution
         final_response = None
         retry_count = 0
-        max_retries = 2
+        max_retries = 1  # Reduced from 2 to prevent long validation loops
         chart_data_json = None  # Track chart data if generated
         map_data_json = None  # Track map data if generated
+
+        # Initialize fresh budget for this request
+        initial_budget = AgentBudget()
 
         # Stream from graph with updates mode to see each node
         for event in self._graph.stream(
@@ -1463,8 +1902,11 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                 "tool_loop_replan_count": 0,
                 "total_tool_calls": 0,
                 "tool_call_counts": {},
+                "budget": initial_budget.to_dict(),
+                "budget_exceeded": False,
+                "budget_status": None,
             },
-            config={"recursion_limit": 80},
+            config={"recursion_limit": 30},  # Reduced from 80 for safety
             stream_mode="updates",
         ):
             # event is a dict with node_name: node_output
@@ -1523,6 +1965,9 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                         reasoning += f"  - **DBH**: {dbh} cm\n"
                                         reasoning += f"  - **Altezza**: {height} m\n"
                                         reasoning += f"  - **Densità legno**: {wood_density} g/cm³\n"
+                                    elif tool_name == "calculate_co2_aggregate":
+                                        query = tool_args.get("natural_query", "N/A")
+                                        reasoning += f"  - **Query**: _{query}_\n"
                                     elif tool_name == "estimate_environment":
                                         dbh = tool_args.get("dbh_cm", "N/A")
                                         height = tool_args.get("height_m", "N/A")
@@ -1635,6 +2080,23 @@ Per favore, completa la risposta affrontando i task mancanti e rispettando le re
                                     # If not JSON, just show completion message
                                     reasoning = f"✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
                                     yield {"type": "reasoning", "content": reasoning}
+
+                elif node_name == "budget_check":
+                    # Show budget status if limit was hit
+                    if node_output.get("budget_exceeded"):
+                        node_messages = node_output.get("messages", [])
+                        if node_messages:
+                            last_msg = node_messages[-1]
+                            if isinstance(last_msg, AIMessage) and last_msg.content:
+                                final_response = last_msg.content
+                        yield {"type": "reasoning", "content": "⚠️ **Budget Limit**\n\nLimite di esecuzione raggiunto. Interruzione per prevenire loop infiniti.\n"}
+                    else:
+                        status = node_output.get("budget_status", {})
+                        if status:
+                            reasoning = f"✓ **Budget Check**\n\n"
+                            reasoning += f"Tool calls: {status.get('total_tool_calls', 'N/A')}\n"
+                            reasoning += f"Tempo: {status.get('elapsed_time', 'N/A')}\n"
+                            yield {"type": "reasoning", "content": reasoning}
 
                 elif node_name == "tool_loop_guard":
                     # If the loop guard decided to stop, it injects an AIMessage with a user-facing prompt.

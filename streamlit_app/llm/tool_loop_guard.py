@@ -141,10 +141,26 @@ class ToolLoopGuard:
         """
         If the last tool result already contains a definitive answer (e.g. top-1 aggregation),
         return a final user-facing answer to avoid extra LLM turns.
+        
+        This method builds DYNAMIC responses based on the actual data source,
+        avoiding hardcoded city/dataset names.
         """
         result = self._try_extract_latest_tool_result(messages)
         if not isinstance(result, dict):
             return None
+
+        # Extract data source info for dynamic response (if available)
+        data_source = result.get("data_source", {})
+        dataset_name = data_source.get("name", "")
+        dataset_provider = data_source.get("provider", "")
+        dataset_url = data_source.get("url", "")
+        
+        # Build source citation if available
+        source_citation = ""
+        if dataset_provider and dataset_url:
+            source_citation = f"\n\n📊 Dati: {dataset_provider}\n{dataset_url}"
+        elif dataset_name:
+            source_citation = f"\n\n📊 Fonte: {dataset_name}"
 
         rows = result.get("results")
         if not isinstance(rows, list) or not rows:
@@ -163,8 +179,10 @@ class ToolLoopGuard:
 
             if species and count_int is not None:
                 count_it = self._format_int_it(count_int)
+                # Dynamic response without hardcoded city name
                 return (
-                    f"A Milano la specie più diffusa è {species}: {count_it} alberi\n\n"
+                    f"La specie più diffusa nel dataset è **{species}**: {count_it} alberi"
+                    f"{source_citation}\n\n"
                     f"Tool utilizzati: Dataset Query Tool"
                 )
 
@@ -173,7 +191,18 @@ class ToolLoopGuard:
             val = result.get("result")
             col = str(result.get("column") or "").strip()
             if col and isinstance(val, (int, float, str)):
-                return f"{col}: {val}\n\nTool utilizzati: Dataset Query Tool"
+                # Format numeric values with Italian notation
+                formatted_val = val
+                if isinstance(val, int):
+                    formatted_val = self._format_int_it(val)
+                elif isinstance(val, float):
+                    formatted_val = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                
+                return (
+                    f"**{col}**: {formatted_val}"
+                    f"{source_citation}\n\n"
+                    f"Tool utilizzati: Dataset Query Tool"
+                )
 
         return None
 

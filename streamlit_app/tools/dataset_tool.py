@@ -448,8 +448,23 @@ Now translate this question:
             # Translate natural language to SQL
             sql = self._translate_to_sql(natural_query, schema_info)
             
-            # Execute SQL and get results (pass natural query for semantic filtering)
-            result = self._execute_sql(conn, sql, natural_query=natural_query)
+            # Validate SQL before execution (SQL injection prevention)
+            from streamlit_app.tools.sql_validator import SQLValidator
+            
+            validator = SQLValidator(allowed_tables=[self._table_name])
+            is_valid, sanitized_sql, error_msg = validator.validate(sql)
+            
+            if not is_valid:
+                conn.close()
+                return {
+                    "error": f"SQL validation failed: {error_msg}",
+                    "sql_attempted": sql,
+                    "natural_query": natural_query,
+                    "hint": "Please rephrase your question to request data retrieval only (SELECT queries)."
+                }
+            
+            # Execute validated and sanitized SQL
+            result = self._execute_sql(conn, sanitized_sql, natural_query=natural_query)
             
             # Close connection
             conn.close()
