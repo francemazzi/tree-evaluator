@@ -218,9 +218,16 @@ IMPORTANT NOTES:
 5. **ALWAYS USE LIMIT** - NEVER return all rows without LIMIT (max 100 for SELECT *, max 20 for aggregations, LIMIT 1 for single results)
 6. For "mostrami" or "dammi" queries, use SELECT with LIMIT
 7. For species searches, use LIKE with % wildcards (case-insensitive)
-8. Common species keywords: Acer (acero), Tilia (tiglio), Quercus (quercia), Fraxinus (frassino)
+8. Common species keywords: Acer (acero), Tilia (tiglio), Quercus (quercia), Fraxinus (frassino), Pinus (pino)
 9. For "oldest/newest/largest/smallest" queries, use ORDER BY with LIMIT 1 or LIMIT 10
 10. NEVER use SELECT * without LIMIT - always specify columns and LIMIT
+
+CRITICAL FOR COMPOSITE QUERIES:
+- If the question mentions "distretto con più alberi/piante" or similar, use a SUBQUERY to find that district first
+- Example: "specie del distretto con più piante" should be translated to:
+  SELECT genus_species, COUNT(*) as count FROM {self._table_name} 
+  WHERE district = (SELECT district FROM {self._table_name} GROUP BY district ORDER BY COUNT(*) DESC LIMIT 1)
+  GROUP BY genus_species ORDER BY count DESC LIMIT 20
 
 USER QUESTION: {natural_query}
 
@@ -256,6 +263,12 @@ SQL: SELECT objectid, genus_species, plant_year, district, ({current_year} - pla
 
 Question: "Mostra i 10 alberi più vecchi"
 SQL: SELECT objectid, genus_species, plant_year, district, ({current_year} - plant_year) as age FROM baumkatogd WHERE plant_year > 0 ORDER BY plant_year ASC LIMIT 10
+
+Question: "Quali sono le specie del distretto con più piante?"
+SQL: SELECT genus_species, COUNT(*) as count FROM baumkatogd WHERE district = (SELECT district FROM baumkatogd WHERE district IS NOT NULL GROUP BY district ORDER BY COUNT(*) DESC LIMIT 1) GROUP BY genus_species ORDER BY count DESC LIMIT 20
+
+Question: "Specie nel distretto 22"
+SQL: SELECT genus_species, COUNT(*) as count FROM baumkatogd WHERE district = 22 GROUP BY genus_species ORDER BY count DESC LIMIT 20
 
 Now translate this question:
 {natural_query}"""

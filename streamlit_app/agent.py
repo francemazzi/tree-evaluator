@@ -1261,6 +1261,86 @@ Scrivi ORA una risposta all'utente che:
 
         return ChatOpenAI(model=model, temperature=temperature, api_key=self._llm_settings.openai_api_key)
 
+    def _extract_key_facts(self, messages: Sequence[BaseMessage]) -> List[str]:
+        """Extract key facts from conversation for context preservation.
+        
+        Identifies important data points like:
+        - District numbers with counts
+        - Species names with counts
+        - Specific values mentioned (ages, sizes, etc.)
+        """
+        import re
+        facts = []
+        
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            content = msg.content or ""
+            if not content:
+                continue
+            
+            # Extract district-related facts
+            # Pattern: "distretto X" followed by numbers or "ha Y alberi"
+            district_patterns = [
+                r'distretto\s+(\d+)\s+(?:ha|con|:)\s*(\d+[\d\.]*)\s*alberi',
+                r'distretto\s+(\d+)\s*.*?(\d+[\d\.]+)\s*alberi',
+                r'District(?:o)?\s*:?\s*(\d+).*?(?:count|conteggio|alberi)\s*:?\s*(\d+[\d\.]*)',
+            ]
+            for pattern in district_patterns:
+                matches = re.findall(pattern, content, re.IGNORECASE)
+                for match in matches:
+                    if len(match) >= 2:
+                        facts.append(f"Distretto {match[0]} ha {match[1]} alberi")
+            
+            # Extract "distretto con più alberi/piante" facts
+            max_district_match = re.search(
+                r'distretto\s+(?:con\s+(?:più|maggior)\s+(?:alberi|piante)|più\s+grande)\s*(?:è\s+(?:il\s+)?)?(\d+)',
+                content, re.IGNORECASE
+            )
+            if max_district_match:
+                facts.append(f"Distretto con più alberi: {max_district_match.group(1)}")
+            
+            # Also check for "Distretto: X" in results
+            result_district = re.search(r'Distretto:\s*(\d+)', content)
+            if result_district:
+                # Try to find associated count
+                count_match = re.search(r'Count:\s*(\d+[\d\.]*)', content)
+                if count_match:
+                    facts.append(f"Distretto {result_district.group(1)} ha {count_match.group(1)} alberi")
+            
+            # Extract species counts
+            species_patterns = [
+                r'([A-Z][a-z]+\s+[a-z]+)\s*[:\-]?\s*(\d+[\d\.]*)\s*alberi',
+                r'specie\s+più\s+comune\s*[:\-]?\s*([A-Z][a-z]+(?:\s+[a-z]+)?)',
+            ]
+            for pattern in species_patterns:
+                matches = re.findall(pattern, content)
+                for match in matches:
+                    if isinstance(match, tuple) and len(match) >= 2:
+                        facts.append(f"Specie {match[0]}: {match[1]} alberi")
+                    elif isinstance(match, str):
+                        facts.append(f"Specie più comune: {match}")
+            
+            # Extract simple numeric facts with context
+            simple_facts = re.findall(
+                r'(?:totale|media|massimo|minimo|count)\s*[:\-]?\s*(\d+[\d\.]*)',
+                content, re.IGNORECASE
+            )
+            # Only add if we have associated context
+            for sf in simple_facts[:2]:
+                if 'totale' in content.lower():
+                    facts.append(f"Totale alberi: {sf}")
+        
+        # Deduplicate while preserving order
+        seen = set()
+        unique_facts = []
+        for f in facts:
+            if f not in seen:
+                seen.add(f)
+                unique_facts.append(f)
+        
+        return unique_facts
+
     def _finalize_response(self, question: str, response_text: str) -> str:
         first_line = (response_text or "").splitlines()[0] if response_text else ""
         if self._extract_first_numeric(first_line) is not None:
@@ -1283,15 +1363,21 @@ Scrivi ORA una risposta all'utente che:
         return f"{one_line}\n\n{rest}".rstrip()
 
     def _manage_context(self, state: AgentState) -> dict:
-        """Manage conversation context to avoid token limit issues."""
+        """Manage conversation context to avoid token limit issues.
+        
+        Preserves key facts from recent conversation to maintain context for follow-up questions.
+        """
         messages = list(state["messages"])
         
-        # Configuration
-        MAX_MESSAGES = 3  # Keep only last N message pairs (user + assistant)
+        # Configuration - increased to preserve more context for follow-up questions
+        MAX_MESSAGES = 10  # Keep more messages for better context continuity
         MAX_MESSAGE_LENGTH = 50000  # Max characters per message
         
         # Count current messages
         message_count = len(messages)
+        
+        # Extract key facts from conversation before trimming (for context preservation)
+        key_facts = self._extract_key_facts(messages)
         
         # If conversation is too long, trim it
         if message_count > MAX_MESSAGES:
@@ -1301,14 +1387,18 @@ Scrivi ORA una risposta all'utente che:
             # Keep only the most recent messages (excluding system)
             recent_messages = [m for m in messages if not isinstance(m, SystemMessage)][-MAX_MESSAGES:]
             
-            # Create a summary of removed context
+            # Create a summary with key facts from removed context
             removed_count = len(messages) - len(system_messages) - len(recent_messages)
             
             if removed_count > 0:
-                context_note = SystemMessage(
-                    content=f"[Nota: {removed_count} messaggi precedenti rimossi per gestione contesto. "
-                    f"Concentrati sulla richiesta corrente dell'utente.]"
-                )
+                context_summary = f"[Nota: {removed_count} messaggi precedenti rimossi per gestione contesto."
+                if key_facts:
+                    context_summary += f"\n\nFatti chiave dalla conversazione precedente:\n"
+                    for fact in key_facts[:5]:  # Keep top 5 facts
+                        context_summary += f"- {fact}\n"
+                context_summary += "\nUsa questi fatti per rispondere a domande di follow-up.]"
+                
+                context_note = SystemMessage(content=context_summary)
                 messages = system_messages + [context_note] + recent_messages
         
         # Compress very long messages (like detailed statistics)
@@ -1472,6 +1562,23 @@ Guidelines:
 - If you need more information, ask the user.
 - When using tools, explain the results in a user-friendly way.
 - For wood density, use species-specific values if known, otherwise default to 0.6 g/cm³.
+
+**CRITICAL: CONVERSATION CONTEXT AND FOLLOW-UP QUESTIONS**
+
+When answering follow-up questions, ALWAYS use information from previous messages:
+
+1. **USE EXISTING CONTEXT**: If the user asks "quali sono le specie del distretto con più piante?" and you already found that district 22 has the most trees, use district 22 directly in your query. Do NOT re-query for "which district has the most trees".
+
+2. **REFERENCE SPECIFIC VALUES**: If you found "district 22 has 33,612 trees", use "WHERE district = 22" directly in follow-up queries.
+
+3. **AVOID REDUNDANT QUERIES**: Never make the same query twice. If you already have the information, use it.
+
+4. **BUILD ON PREVIOUS RESULTS**: For multi-step questions:
+   - BAD: Query "which district has most trees" → Query "which district has most trees" again
+   - GOOD: Use "district = 22" directly based on previous answer
+
+5. **SINGLE EFFICIENT QUERY**: For questions like "species in the district with most trees", make ONE query: 
+   "SELECT genus_species, COUNT(*) FROM table WHERE district = [known_district] GROUP BY genus_species ORDER BY count DESC LIMIT 20"
 
 **CRITICAL RULES - ALWAYS FOLLOW:**
 
