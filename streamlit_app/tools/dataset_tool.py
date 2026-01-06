@@ -418,7 +418,8 @@ Now translate this question:
                         "sql_executed": sql,
                         "results": results,
                         "row_count": len(results),
-                        "columns": columns
+                        "columns": columns,
+                        "instruction": f"IMPORTANT: These are ALL {len(results)} results. Use them to formulate your response. Do NOT call this tool again for the same query."
                     }
                 else:
                     # Use vector search for large result sets

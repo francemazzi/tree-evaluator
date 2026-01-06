@@ -21,6 +21,7 @@ from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.co2_aggregate_tool import CO2AggregateTool
+from streamlit_app.tools.carbon_content_tool import CarbonContentTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
 from streamlit_app.tools.heyer_volume_tool import HeyerVolumeTool
@@ -434,6 +435,7 @@ Nota: trunk_diameter_cm è già il diametro, NON la circonferenza (a differenza 
         self._tools = [
             CO2CalculationTool(),
             co2_aggregate_tool,
+            CarbonContentTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
             species_list_tool,
@@ -701,6 +703,23 @@ Risposta:"""
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
         
+        # CRITICAL: If query_tree_dataset has been called 2+ times with valid results,
+        # FORCE a response using those results instead of allowing more calls
+        dataset_call_count = tool_call_counts.get("query_tree_dataset", 0)
+        if dataset_call_count >= 2:
+            # Check if we have valid results to use
+            dataset_results = self._extract_dataset_results_from_messages(messages)
+            if dataset_results:
+                # We have results! Force a response NOW
+                response = self._format_dataset_results_as_response(dataset_results, messages)
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {"forced_response": True, "results_count": len(dataset_results)},
+                    "tool_call_counts": tool_call_counts,
+                }
+        
         # Check if any single tool has been called too many times (even with different args)
         MAX_CALLS_PER_TOOL = 5  # If same tool called 5+ times, force replan
         abused_tool = None
@@ -762,6 +781,21 @@ Risposta:"""
                 "tool_call_counts": tool_call_counts,
             }
         if decision.action == "replan":
+            # Before allowing replan, check if we already have valid results
+            # If so, force a response instead
+            dataset_results = self._extract_dataset_results_from_messages(messages)
+            if dataset_results and len(dataset_results) > 0:
+                response = self._format_dataset_results_as_response(dataset_results, messages)
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_last_fingerprint": new_fp,
+                    "tool_repeat_count": new_repeat,
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {"forced_response": True, "results_count": len(dataset_results)},
+                    "tool_call_counts": tool_call_counts,
+                }
+            
             return {
                 "tool_last_fingerprint": new_fp,
                 "tool_repeat_count": new_repeat,
@@ -968,14 +1002,37 @@ Scrivi ORA una risposta all'utente che:
             else:
                 fallback_response += "*Non ho trovato risultati specifici per la tua query.*\n\n"
         
-        # For dataset queries, show what was found
+        # For dataset queries, extract and show the results that were found
         elif abused_tool == "query_tree_dataset":
-            fallback_response += (
-                "**Suggerimenti:**\n"
-                "- Prova a riformulare la domanda in modo più specifico\n"
-                "- Verifica che i nomi delle colonne siano corretti\n"
-                "- Chiedi prima la struttura del dataset con \"Mostrami le colonne disponibili\"\n\n"
-            )
+            dataset_results = self._extract_dataset_results_from_messages(messages)
+            
+            if dataset_results:
+                fallback_response = "Ecco i risultati della tua richiesta:\n\n"
+                
+                for i, row in enumerate(dataset_results[:20], 1):
+                    if isinstance(row, dict):
+                        # Format row based on content
+                        if "genus_species" in row and "count" in row:
+                            species = row.get("genus_species", "N/A")
+                            count = row.get("count", 0)
+                            fallback_response += f"{i}. **{species}**: {count:,} alberi\n"
+                        elif "district" in row and "count" in row:
+                            district = row.get("district", "N/A")
+                            count = row.get("count", 0)
+                            fallback_response += f"{i}. Distretto {district}: {count:,} alberi\n"
+                        else:
+                            # Generic row formatting
+                            row_str = ", ".join([f"{k}: {v}" for k, v in row.items() if v is not None])
+                            fallback_response += f"{i}. {row_str}\n"
+                
+                fallback_response += "\n"
+            else:
+                fallback_response += (
+                    "**Suggerimenti:**\n"
+                    "- Prova a riformulare la domanda in modo più specifico\n"
+                    "- Verifica che i nomi delle colonne siano corretti\n"
+                    "- Chiedi prima la struttura del dataset con \"Mostrami le colonne disponibili\"\n\n"
+                )
         
         # Generic suggestions for other tools
         else:
@@ -998,6 +1055,119 @@ Scrivi ORA una risposta all'utente che:
         )
         
         return fallback_response
+
+    def _extract_dataset_results_from_messages(self, messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract dataset query results from ToolMessages."""
+        from langchain_core.messages import ToolMessage
+        import ast
+        
+        all_results = []
+        
+        for msg in reversed(list(messages)):
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            # Try to parse the content
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # Extract results array
+            if isinstance(parsed, dict) and "results" in parsed:
+                results = parsed.get("results", [])
+                if isinstance(results, list) and results:
+                    all_results = results  # Take the most recent results
+                    break  # Stop at first valid result set
+        
+        return all_results
+
+    def _format_dataset_results_as_response(self, results: List[dict], messages: Sequence[BaseMessage]) -> str:
+        """Format dataset results as a user-friendly response.
+        
+        Analyzes the structure of results to determine the best formatting.
+        """
+        if not results:
+            return "Non ho trovato risultati per la tua richiesta.\n\nTool utilizzati: Dataset Query Tool"
+        
+        # Try to extract the original user question for context
+        user_question = ""
+        for msg in messages:
+            if isinstance(msg, HumanMessage):
+                user_question = msg.content
+        
+        # Analyze result structure to determine response format
+        first_row = results[0]
+        
+        # Case 1: Species count results (genus_species + count)
+        if isinstance(first_row, dict) and "genus_species" in first_row and "count" in first_row:
+            response = f"Ecco le {len(results)} specie più diffuse nel dataset:\n\n"
+            for i, row in enumerate(results, 1):
+                species = row.get("genus_species", "N/A")
+                count = row.get("count", 0)
+                # Format count with Italian thousands separator
+                count_formatted = f"{count:,}".replace(",", ".")
+                response += f"{i}. **{species}**: {count_formatted} alberi\n"
+            
+            response += "\n📊 Dati: Vienna Trees Dataset (BAUMKATOGD)\n"
+            response += "\nTool utilizzati: Dataset Query Tool"
+            return response
+        
+        # Case 2: District count results (district + count)
+        if isinstance(first_row, dict) and "district" in first_row and "count" in first_row:
+            response = f"Ecco i {len(results)} distretti:\n\n"
+            for i, row in enumerate(results, 1):
+                district = row.get("district", "N/A")
+                count = row.get("count", 0)
+                count_formatted = f"{count:,}".replace(",", ".")
+                response += f"{i}. Distretto **{district}**: {count_formatted} alberi\n"
+            
+            response += "\n📊 Dati: Vienna Trees Dataset (BAUMKATOGD)\n"
+            response += "\nTool utilizzati: Dataset Query Tool"
+            return response
+        
+        # Case 3: Single value result
+        if isinstance(first_row, dict) and len(first_row) == 1:
+            key, value = list(first_row.items())[0]
+            if isinstance(value, (int, float)):
+                value_formatted = f"{value:,}".replace(",", ".")
+                response = f"**{key}**: {value_formatted}\n\n"
+                response += "Tool utilizzati: Dataset Query Tool"
+                return response
+        
+        # Case 4: Generic results - format as table
+        response = f"Ho trovato {len(results)} risultati:\n\n"
+        for i, row in enumerate(results[:20], 1):  # Limit to 20 rows
+            if isinstance(row, dict):
+                row_parts = []
+                for key, value in row.items():
+                    if value is not None:
+                        if isinstance(value, (int, float)) and not isinstance(value, bool):
+                            value_str = f"{value:,}".replace(",", ".")
+                        else:
+                            value_str = str(value)
+                        row_parts.append(f"{key}: {value_str}")
+                response += f"{i}. {', '.join(row_parts)}\n"
+        
+        if len(results) > 20:
+            response += f"\n... e altri {len(results) - 20} risultati\n"
+        
+        response += "\nTool utilizzati: Dataset Query Tool"
+        return response
 
     def _extract_papers_from_messages(self, messages: Sequence[BaseMessage]) -> List[dict]:
         """Extract paper results from ToolMessages for search_scientific_papers."""
@@ -1579,6 +1749,22 @@ When answering follow-up questions, ALWAYS use information from previous message
 
 5. **SINGLE EFFICIENT QUERY**: For questions like "species in the district with most trees", make ONE query: 
    "SELECT genus_species, COUNT(*) FROM table WHERE district = [known_district] GROUP BY genus_species ORDER BY count DESC LIMIT 20"
+
+**CRITICAL: TOOL RESULTS HANDLING**
+
+1. **USE TOOL RESULTS IMMEDIATELY**: When a tool returns results (e.g., "results": [{...}, {...}]), you MUST use those results to formulate your answer. Do NOT call the same tool again.
+
+2. **NEVER REPEAT TOOL CALLS**: If you already received data from a tool, use that data. Calling the same tool with similar queries is wasteful and will trigger budget limits.
+
+3. **FORMAT MULTI-ROW RESULTS**: When tool results contain multiple rows (e.g., top 10 species), list ALL of them in your response:
+   ```
+   Le 10 specie più diffuse sono:
+   1. Acer platanoides: 19.318 alberi
+   2. Aesculus hippocastanum: 11.792 alberi
+   3. ...
+   ```
+
+4. **COMPLETE YOUR RESPONSE**: After receiving tool results, formulate a complete answer. Do NOT call tools again unless the user asks a NEW question.
 
 **CRITICAL RULES - ALWAYS FOLLOW:**
 

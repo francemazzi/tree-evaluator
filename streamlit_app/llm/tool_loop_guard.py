@@ -37,7 +37,10 @@ class ToolLoopGuard:
         if conclusive:
             return ToolLoopDecision("stop", "conclusive_tool_result", None, conclusive), fingerprint, 1
 
-        if fingerprint == last_fingerprint:
+        # Check for semantically similar queries (same tool, similar natural language query)
+        if self._is_semantically_similar(fingerprint, last_fingerprint):
+            repeat_count += 1
+        elif fingerprint == last_fingerprint:
             repeat_count += 1
         else:
             repeat_count = 1
@@ -48,6 +51,61 @@ class ToolLoopGuard:
         # Replan: we are repeating the exact same tool call. Let the graph try to recover first.
         user_msg = self._build_user_message(details, repeat_count)
         return ToolLoopDecision("replan", "repeated_tool_call", details, user_msg), fingerprint, repeat_count
+    
+    def _is_semantically_similar(self, fp1: Optional[str], fp2: Optional[str]) -> bool:
+        """Check if two fingerprints represent semantically similar queries.
+        
+        Detects cases like:
+        - "Top 10 specie più comuni" vs "Mostra le 10 specie più diffuse"
+        - Same tool called with slightly different phrasing
+        """
+        if not fp1 or not fp2:
+            return False
+        
+        # Extract tool names
+        tool1 = fp1.split(":")[0] if ":" in fp1 else ""
+        tool2 = fp2.split(":")[0] if ":" in fp2 else ""
+        
+        # If different tools, not similar
+        if tool1 != tool2:
+            return False
+        
+        # For query_tree_dataset, check if queries have similar intent
+        if "query_tree_dataset" in tool1:
+            # Extract natural_query from both fingerprints
+            import re
+            q1_match = re.search(r'"natural_query":"([^"]+)"', fp1)
+            q2_match = re.search(r'"natural_query":"([^"]+)"', fp2)
+            
+            if q1_match and q2_match:
+                q1 = q1_match.group(1).lower()
+                q2 = q2_match.group(1).lower()
+                
+                # Check for common patterns indicating same intent
+                patterns = [
+                    (r"top\s*\d+\s*specie", r"top\s*\d+\s*specie"),
+                    (r"\d+\s*specie.*più.*diffus", r"\d+\s*specie.*più.*diffus"),
+                    (r"\d+\s*specie.*più.*comun", r"\d+\s*specie.*più.*comun"),
+                    (r"specie.*più.*diffus", r"specie.*più.*comun"),
+                    (r"alberi.*più.*diffus", r"alberi.*più.*comun"),
+                ]
+                
+                for p1, p2 in patterns:
+                    if re.search(p1, q1) and re.search(p2, q2):
+                        return True
+                    if re.search(p2, q1) and re.search(p1, q2):
+                        return True
+                
+                # Check keyword overlap
+                keywords1 = set(re.findall(r'\b\w{4,}\b', q1))
+                keywords2 = set(re.findall(r'\b\w{4,}\b', q2))
+                
+                if keywords1 and keywords2:
+                    overlap = len(keywords1 & keywords2) / max(len(keywords1), len(keywords2))
+                    if overlap > 0.5:  # More than 50% keyword overlap
+                        return True
+        
+        return False
 
     def _extract_latest_tool_fingerprint(self, messages: Sequence[BaseMessage]) -> Tuple[Optional[str], Dict[str, Any]]:
         # Find the most recent AIMessage that contains tool_calls
@@ -144,6 +202,13 @@ class ToolLoopGuard:
         
         This method builds DYNAMIC responses based on the actual data source,
         avoiding hardcoded city/dataset names.
+        
+        IMPORTANT: Only builds conclusive answers for:
+        - Single row results (top-1 queries)
+        - Single value results (COUNT, AVG, etc.)
+        
+        For multi-row results (top 5, top 10, etc.), returns None to let the LLM
+        format a proper response with all results.
         """
         result = self._try_extract_latest_tool_result(messages)
         if not isinstance(result, dict):
@@ -166,6 +231,11 @@ class ToolLoopGuard:
         if not isinstance(rows, list) or not rows:
             return None
 
+        # ONLY handle single-row results (top-1 queries)
+        # For multiple rows (top 5, top 10, etc.), let the LLM format the response
+        if len(rows) > 1:
+            return None  # Let LLM handle multi-row results properly
+        
         # Handle common "top-1" aggregation row: {genus_species: ..., count: ...}
         row0 = rows[0]
         if isinstance(row0, dict) and "genus_species" in row0 and "count" in row0:
