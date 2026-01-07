@@ -233,11 +233,44 @@ class StreamingHandler:
         if node_messages:
             last_msg = node_messages[-1]
             if isinstance(last_msg, AIMessage) and last_msg.content:
-                return {
+                # Extract chart/map data from the response if present
+                chart_json = None
+                map_json = None
+                content = last_msg.content
+                
+                # Extract chart data
+                if "CHART_DATA_START" in content and "CHART_DATA_END" in content:
+                    try:
+                        start_idx = content.find("CHART_DATA_START") + len("CHART_DATA_START")
+                        end_idx = content.find("CHART_DATA_END")
+                        json_str = content[start_idx:end_idx].strip()
+                        chart_json = json_str  # Keep as string for streaming handler
+                    except Exception:
+                        pass
+                
+                # Extract map data
+                if "MAP_DATA_START" in content and "MAP_DATA_END" in content:
+                    try:
+                        start_idx = content.find("MAP_DATA_START") + len("MAP_DATA_START")
+                        end_idx = content.find("MAP_DATA_END")
+                        json_str = content[start_idx:end_idx].strip()
+                        map_json = json_str  # Keep as string for streaming handler
+                    except Exception:
+                        pass
+                
+                result = {
                     "type": "reasoning",
                     "content": "🛑 **Stop Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Interrompo ed entro in modalità chiarimento.\n",
                     "final_response": last_msg.content
                 }
+                
+                # Add chart/map data if found
+                if chart_json:
+                    result["chart_json"] = chart_json
+                if map_json:
+                    result["map_json"] = map_json
+                
+                return result
         else:
             if node_output.get("tool_loop_action") == "replan":
                 return {

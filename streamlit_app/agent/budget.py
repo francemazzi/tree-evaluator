@@ -26,9 +26,9 @@ class AgentBudget:
     """
     
     # Budget limits (configurable)
-    max_total_tool_calls: int = 15          # Hard limit on total tool calls
-    max_calls_per_tool: int = 3             # Max calls to same tool
-    max_llm_calls: int = 10                 # Max LLM invocations
+    max_total_tool_calls: int = 20          # Hard limit on total tool calls
+    max_calls_per_tool: int = 5             # Max calls to same tool (increased for viz tools)
+    max_llm_calls: int = 15                 # Max LLM invocations
     max_execution_time_seconds: int = 120   # Timeout in seconds
     max_replans: int = 2                    # Max replan attempts
     
@@ -119,9 +119,9 @@ class AgentBudget:
     def from_dict(cls, data: Dict[str, Any]) -> "AgentBudget":
         """Deserialize budget from dict."""
         budget = cls(
-            max_total_tool_calls=data.get("max_total_tool_calls", 15),
-            max_calls_per_tool=data.get("max_calls_per_tool", 3),
-            max_llm_calls=data.get("max_llm_calls", 10),
+            max_total_tool_calls=data.get("max_total_tool_calls", 20),
+            max_calls_per_tool=data.get("max_calls_per_tool", 5),
+            max_llm_calls=data.get("max_llm_calls", 15),
             max_execution_time_seconds=data.get("max_execution_time_seconds", 120),
             max_replans=data.get("max_replans", 2),
         )

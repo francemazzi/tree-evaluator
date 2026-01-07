@@ -733,6 +733,11 @@ Risposta:"""
                     result = StreamingHandler.handle_tool_loop_guard_event(node_output)
                     if result and "final_response" in result:
                         final_response = result.pop("final_response")
+                        # Extract chart/map data if present
+                        if "chart_json" in result:
+                            chart_data_json = result.pop("chart_json")
+                        if "map_json" in result:
+                            map_data_json = result.pop("map_json")
                 elif node_name == "tool_loop_replanner":
                     result = {"type": "reasoning", "content": "🧠 **Replanning**\n\nSto riformulando il prossimo passo per evitare ripetizioni.\n"}
                 elif node_name == "validator":

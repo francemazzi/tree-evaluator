@@ -267,4 +267,98 @@ class DataExtractor:
                     tool_results.append({"tool": tool_name, "result": str(content)[:500]})
         
         return tool_results
+    
+    @staticmethod
+    def extract_chart_results(messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract successful chart generation results from ToolMessages.
+        
+        Args:
+            messages: Conversation messages to extract from
+            
+        Returns:
+            List of chart result dictionaries with success=True
+        """
+        chart_results = []
+        
+        for msg in reversed(list(messages)):
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            tool_name = getattr(msg, "name", None)
+            if tool_name != "generate_chart":
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            # Try to parse the content
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # Check if chart generation was successful
+            if isinstance(parsed, dict) and parsed.get("success") is True:
+                if "chart_json" in parsed:
+                    chart_results.append(parsed)
+        
+        return chart_results
+    
+    @staticmethod
+    def extract_map_results(messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract successful map generation results from ToolMessages.
+        
+        Args:
+            messages: Conversation messages to extract from
+            
+        Returns:
+            List of map result dictionaries with success=True
+        """
+        map_results = []
+        
+        for msg in reversed(list(messages)):
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            tool_name = getattr(msg, "name", None)
+            if tool_name != "generate_map":
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            # Try to parse the content
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # Check if map generation was successful
+            if isinstance(parsed, dict) and parsed.get("success") is True:
+                if "map_html" in parsed:
+                    map_results.append(parsed)
+        
+        return map_results
 

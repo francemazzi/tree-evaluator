@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
@@ -52,6 +53,40 @@ class ToolLoopManager:
                     "tool_loop_detected": True,
                     "tool_loop_action": "stop",
                     "tool_loop_details": {"forced_response": True, "results_count": len(dataset_results)},
+                    "tool_call_counts": tool_call_counts,
+                }
+        
+        # CRITICAL: If generate_chart has been called 2+ times with successful result,
+        # FORCE a response with the chart instead of allowing more calls
+        chart_call_count = tool_call_counts.get("generate_chart", 0)
+        if chart_call_count >= 2:
+            # Check if we have a successful chart
+            chart_results = self._extractor.extract_chart_results(messages)
+            if chart_results:
+                # We have a chart! Force a response NOW
+                response = self._format_chart_results(chart_results, messages)
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {"forced_response": True, "chart_count": len(chart_results)},
+                    "tool_call_counts": tool_call_counts,
+                }
+        
+        # CRITICAL: If generate_map has been called 2+ times with successful result,
+        # FORCE a response with the map instead of allowing more calls
+        map_call_count = tool_call_counts.get("generate_map", 0)
+        if map_call_count >= 2:
+            # Check if we have a successful map
+            map_results = self._extractor.extract_map_results(messages)
+            if map_results:
+                # We have a map! Force a response NOW
+                response = self._format_map_results(map_results, messages)
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {"forced_response": True, "map_count": len(map_results)},
                     "tool_call_counts": tool_call_counts,
                 }
         
@@ -245,4 +280,50 @@ Scrivi ORA una risposta all'utente che:
         """Format dataset results as user-friendly response."""
         from streamlit_app.agent.response_builder import ResponseBuilder
         return ResponseBuilder.format_dataset_results(results, messages)
+    
+    def _format_chart_results(self, chart_results: List[dict], messages: Sequence[BaseMessage]) -> str:
+        """Format chart results as user-friendly response."""
+        if not chart_results:
+            return "Non sono riuscito a generare il grafico richiesto."
+        
+        # Get the most recent successful chart
+        chart = chart_results[0]
+        
+        # Build response with chart markers for UI parsing
+        chart_type = chart.get("chart_type", "grafico")
+        data_points = chart.get("data_points", 0)
+        title = chart.get("title", "Grafico")
+        description = chart.get("description", f"Grafico {chart_type} generato con successo")
+        
+        response = f"Ecco il {chart_type} che hai richiesto: **{title}**\n\n"
+        response += f"{description} con {data_points} punti dati.\n\n"
+        
+        # Add chart data markers for UI
+        chart_json_str = json.dumps(chart, ensure_ascii=False, indent=2)
+        response += f"\nCHART_DATA_START\n{chart_json_str}\nCHART_DATA_END\n"
+        
+        return response
+    
+    def _format_map_results(self, map_results: List[dict], messages: Sequence[BaseMessage]) -> str:
+        """Format map results as user-friendly response."""
+        if not map_results:
+            return "Non sono riuscito a generare la mappa richiesta."
+        
+        # Get the most recent successful map
+        map_data = map_results[0]
+        
+        # Build response with map markers for UI parsing
+        map_type = map_data.get("map_type", "mappa")
+        data_points = map_data.get("data_points", 0)
+        title = map_data.get("title", "Mappa")
+        description = map_data.get("description", f"Mappa {map_type} generata con successo")
+        
+        response = f"Ecco la {map_type} che hai richiesto: **{title}**\n\n"
+        response += f"{description} con {data_points} punti visualizzati.\n\n"
+        
+        # Add map data markers for UI
+        map_json_str = json.dumps(map_data, ensure_ascii=False, indent=2)
+        response += f"\nMAP_DATA_START\n{map_json_str}\nMAP_DATA_END\n"
+        
+        return response
 

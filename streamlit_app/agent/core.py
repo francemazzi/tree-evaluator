@@ -35,6 +35,7 @@ from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
 from streamlit_app.tools.general_volume_tool import GeneralVolumeTool
 from streamlit_app.tools.heyer_volume_tool import HeyerVolumeTool
+from streamlit_app.tools.language_tool import LanguageDetectionTool, LanguageTranslationTool
 from streamlit_app.tools.leaf_biomass_tool import LeafBiomassTool
 from streamlit_app.tools.log_allometric_tool import LogAllometricTool
 from streamlit_app.tools.log_fuel_biomass_tool import LogFuelBiomassTool
@@ -223,6 +224,8 @@ class TreeEvaluatorAgent:
             RootBiomassTool(),
             TotalBiomassTool(),
             PaperSearchTool(),
+            LanguageDetectionTool(llm=self._base_llm),
+            LanguageTranslationTool(llm=self._base_llm),
         ]
 
     def _build_graph(self) -> StateGraph:

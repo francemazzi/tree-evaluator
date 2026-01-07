@@ -620,6 +620,18 @@ class ChatUI:
                 container.write(f"**Zoom:** {map_data.get('zoom', 'N/A')}")
         except Exception as e:
             container.error(f"Errore nella visualizzazione della mappa: {e}")
+
+    def _render_plotly_figure(self, fig: go.Figure, height: int = 520) -> None:
+        """Render a Plotly figure in a robust way inside Streamlit chat.
+
+        Note: `st.plotly_chart` can intermittently fail to render in some chat layouts.
+        Using `components.html(fig.to_html(...))` is more reliable.
+        """
+        try:
+            html = fig.to_html(include_plotlyjs="inline", full_html=False)
+            components.html(html, height=height, scrolling=False)
+        except Exception as e:
+            st.error(f"Errore nella visualizzazione del grafico (Plotly HTML): {e}")
     
     def _render_messages(self) -> None:
         """Render all messages in the current conversation."""
@@ -645,7 +657,7 @@ class ChatUI:
                         try:
                             chart_json = chart_data["chart_json"]
                             fig = go.Figure(json.loads(chart_json))
-                            st.plotly_chart(fig, use_container_width=True)
+                            self._render_plotly_figure(fig)
                             
                             # Show chart info
                             with st.expander("ℹ️ Dettagli grafico"):
@@ -859,8 +871,11 @@ class ChatUI:
                     # Create container for reasoning steps
                     reasoning_placeholder = st.empty()
                     response_placeholder = st.empty()
-                    chart_placeholder = st.empty()
-                    map_placeholder = st.empty()
+                    # IMPORTANT: use stable containers for rich media.
+                    # `st.empty()` + `components.html()` (Plotly iframe) often only appears after a rerun
+                    # (e.g., when switching conversation). Containers render reliably in the same run.
+                    chart_placeholder = st.container()
+                    map_placeholder = st.container()
                     
                     reasoning_steps = []
                     full_response = ""
@@ -929,7 +944,7 @@ class ChatUI:
                                 try:
                                     chart_json = extracted_chart["chart_json"]
                                     fig = go.Figure(json.loads(chart_json))
-                                    st.plotly_chart(fig, use_container_width=True)
+                                    self._render_plotly_figure(fig)
                                     
                                     # Show chart info
                                     with st.expander("ℹ️ Dettagli grafico"):
