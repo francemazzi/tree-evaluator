@@ -137,7 +137,8 @@ class TreeEvaluatorAgent:
             )
         elif dataset_preset in DATASET_PRESETS:
             preset = DATASET_PRESETS[dataset_preset]
-            db_path = Path(__file__).parent.parent / preset["db_path"]
+            # Path: core.py is in /streamlit_app/agent/, need to go up 2 levels to reach project root
+            db_path = Path(__file__).parent.parent.parent / preset["db_path"]
             dataset_tool = DatasetQueryTool(
                 db_path=db_path,
                 table_name=preset["table_name"],
@@ -154,7 +155,8 @@ class TreeEvaluatorAgent:
             )
 
         # Initialize SpeciesListQueryTool
-        species_list_db_path = Path(__file__).parent.parent / "dataset" / "species_list.db"
+        # Path: core.py is in /streamlit_app/agent/, need to go up 2 levels to reach project root
+        species_list_db_path = Path(__file__).parent.parent.parent / "dataset" / "species_list.db"
         species_list_tool = SpeciesListQueryTool(
             db_path=species_list_db_path,
             table_name="species_list",
@@ -173,7 +175,8 @@ class TreeEvaluatorAgent:
             )
         elif dataset_preset in DATASET_PRESETS:
             preset = DATASET_PRESETS[dataset_preset]
-            db_path = Path(__file__).parent.parent / preset["db_path"]
+            # Path: core.py is in /streamlit_app/agent/, need to go up 2 levels to reach project root
+            db_path = Path(__file__).parent.parent.parent / preset["db_path"]
             co2_aggregate_tool = CO2AggregateTool(
                 db_path=db_path,
                 table_name=preset["table_name"],
