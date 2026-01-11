@@ -21,6 +21,7 @@ class UserLlmSettings:
     ollama_base_url: str
     ollama_chat_model: str
     ollama_embedding_model: str
+    interface_language: str  # "it" | "en" - Language for agent responses
 
     @staticmethod
     def default(user_id: str) -> "UserLlmSettings":
@@ -33,6 +34,7 @@ class UserLlmSettings:
             ollama_base_url=OllamaBaseUrlResolver().resolve(),
             ollama_chat_model="qwen2.5:7b-instruct",
             ollama_embedding_model="nomic-embed-text",
+            interface_language="it",
         )
 
 
@@ -86,9 +88,10 @@ class ChatMessage:
     role: Role
     content: str
     created_at: datetime
+    reasoning: Optional[str] = None  # Reasoning steps for assistant messages
 
     @staticmethod
-    def new(user_id: str, conversation_id: int, role: Role, content: str) -> "ChatMessage":
+    def new(user_id: str, conversation_id: int, role: Role, content: str, reasoning: Optional[str] = None) -> "ChatMessage":
         created_at = datetime.now(tz=timezone.utc)
         return ChatMessage(
             user_id=user_id,
@@ -96,16 +99,18 @@ class ChatMessage:
             role=role,
             content=content,
             created_at=created_at,
+            reasoning=reasoning,
         )
 
-    def to_persistence_tuple(self) -> tuple[str, int, str, str, str]:
-        """Return tuple for INSERT: (user_id, conversation_id, role, content, created_at)."""
+    def to_persistence_tuple(self) -> tuple[str, int, str, str, str, Optional[str]]:
+        """Return tuple for INSERT: (user_id, conversation_id, role, content, created_at, reasoning)."""
         return (
             self.user_id,
             self.conversation_id,
             self.role,
             self.content,
             self.created_at.isoformat(),
+            self.reasoning,
         )
 
     @staticmethod
@@ -117,6 +122,7 @@ class ChatMessage:
             role=row["role"],
             content=row["content"],
             created_at=created_at,
+            reasoning=row.get("reasoning"),
         )
 
 

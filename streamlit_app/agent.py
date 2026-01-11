@@ -66,7 +66,8 @@ class TreeEvaluatorAgent:
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
         data_description: str = "",
-        dataset_preset: str = "vienna"
+        dataset_preset: str = "vienna",
+        interface_language: str = "it"
     ) -> None:
         """Initialize the agent with tools and LLM.
 
@@ -82,6 +83,7 @@ class TreeEvaluatorAgent:
             custom_table_name: Optional custom table name in the database
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
+            interface_language: Language for agent responses ("it" for Italian, "en" for English)
         """
         # Initialize LLM settings and factory
         self._llm_settings: LlmSettings = LlmSettingsReader().read(
@@ -107,6 +109,9 @@ class TreeEvaluatorAgent:
         self._base_llm = self._llm_factory.create_chat_model()
         self._fallback_llm = self._llm_factory.create_fallback_chat_model()
         self._embeddings = self._llm_factory.create_embeddings()
+
+        # Store interface language
+        self._interface_language = interface_language if interface_language in ["it", "en"] else "it"
 
         # Initialize tools
         self._tools = self._initialize_tools(custom_db_path, custom_table_name, data_description, dataset_preset)
@@ -227,6 +232,7 @@ class TreeEvaluatorAgent:
         workflow = StateGraph(AgentState)
 
         # Define nodes
+        workflow.add_node("language_detector", self._detect_language)
         workflow.add_node("context_manager", self._manage_context)
         workflow.add_node("query_optimizer", self._optimize_query)
         workflow.add_node("budget_check", self._check_budget)
@@ -237,10 +243,11 @@ class TreeEvaluatorAgent:
         workflow.add_node("validator", self._validate_response)
         workflow.add_node("retry_counter", self._increment_retry_count)
 
-        # Set entry point
-        workflow.set_entry_point("context_manager")
+        # Set entry point - start with language detection
+        workflow.set_entry_point("language_detector")
 
         # Define edges
+        workflow.add_edge("language_detector", "context_manager")
         workflow.add_edge("context_manager", "query_optimizer")
         workflow.add_edge("query_optimizer", "agent")
 
@@ -275,6 +282,14 @@ class TreeEvaluatorAgent:
         return workflow.compile()
 
     # ===== Node Methods =====
+
+    def _detect_language(self, state: AgentState) -> dict:
+        """Set the language for agent responses.
+        
+        Uses the interface language configured in user settings.
+        """
+        # Use the configured interface language instead of auto-detection
+        return {"detected_language": self._interface_language}
 
     def _manage_context(self, state: AgentState) -> dict:
         """Manage conversation context to avoid token limit issues."""
@@ -467,10 +482,14 @@ Risposta:"""
     def _call_model(self, state: AgentState) -> dict:
         """Call the LLM model."""
         messages = state["messages"]
+        
+        # Get the detected language (default to Italian)
+        detected_language = state.get("detected_language", "it")
 
-        # Add system message if not present
+        # Add system message if not present, using the detected language
         if not any(isinstance(m, SystemMessage) for m in messages):
-            system_msg = SystemMessage(content=SystemPrompts.MAIN_SYSTEM_PROMPT)
+            system_prompt = SystemPrompts.get_system_prompt(detected_language)
+            system_msg = SystemMessage(content=system_prompt)
             messages = [system_msg] + list(messages)
 
         # Truncate messages to save tokens
@@ -710,7 +729,9 @@ Risposta:"""
             for node_name, node_output in event.items():
                 result = None
 
-                if node_name == "context_manager":
+                if node_name == "language_detector":
+                    result = StreamingHandler.handle_language_detector_event(node_output)
+                elif node_name == "context_manager":
                     result = StreamingHandler.handle_context_manager_event(node_output, len(messages))
                 elif node_name == "query_optimizer":
                     result = StreamingHandler.handle_query_optimizer_event(node_output)

@@ -65,6 +65,7 @@ class ChatRepository:
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    reasoning TEXT,
                     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
                 );
                 """
@@ -75,6 +76,8 @@ class ChatRepository:
                 ON messages (conversation_id, created_at);
                 """
             )
+            # Migrate: add reasoning column if not exists
+            self._ensure_messages_reasoning_column(connection)
             
             # Create user_settings table for persistent settings
             connection.execute(
@@ -94,6 +97,16 @@ class ChatRepository:
             )
             self._ensure_user_settings_columns(connection)
 
+    def _ensure_messages_reasoning_column(self, connection: sqlite3.Connection) -> None:
+        """Add reasoning column to messages table if it doesn't exist."""
+        try:
+            cursor = connection.execute("PRAGMA table_info(messages)")
+            existing = {row[1] for row in cursor.fetchall()}  # type: ignore[index]
+            if "reasoning" not in existing:
+                connection.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT")
+        except Exception:
+            pass  # Column might already exist or table doesn't exist yet
+
     def _ensure_user_settings_columns(self, connection: sqlite3.Connection) -> None:
         """Best-effort schema migration for user_settings (SQLite ALTER TABLE ADD COLUMN)."""
         try:
@@ -109,6 +122,7 @@ class ChatRepository:
             "ollama_base_url": "TEXT",
             "ollama_chat_model": "TEXT",
             "ollama_embedding_model": "TEXT",
+            "interface_language": "TEXT",
         }
         for col, col_type in desired_columns.items():
             if col not in existing:
@@ -203,8 +217,8 @@ class ChatRepository:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO messages (user_id, conversation_id, role, content, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO messages (user_id, conversation_id, role, content, created_at, reasoning)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 message.to_persistence_tuple(),
             )
@@ -225,7 +239,7 @@ class ChatRepository:
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                SELECT user_id, conversation_id, role, content, created_at
+                SELECT user_id, conversation_id, role, content, created_at, reasoning
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY datetime(created_at) ASC
@@ -247,8 +261,9 @@ class ChatRepository:
         ollama_base_url: str = "",
         ollama_chat_model: str = "qwen2.5:7b-instruct",
         ollama_embedding_model: str = "nomic-embed-text",
+        interface_language: str = "it",
     ) -> None:
-        """Save or update user settings (LLM provider + models + optional OpenAI API key)."""
+        """Save or update user settings (LLM provider + models + optional OpenAI API key + interface language)."""
         from datetime import datetime, timezone
         from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
         with self._connect() as connection:
@@ -264,9 +279,10 @@ class ChatRepository:
                     ollama_base_url,
                     ollama_chat_model,
                     ollama_embedding_model,
+                    interface_language,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     openai_api_key = excluded.openai_api_key,
                     llm_provider = excluded.llm_provider,
@@ -275,6 +291,7 @@ class ChatRepository:
                     ollama_base_url = excluded.ollama_base_url,
                     ollama_chat_model = excluded.ollama_chat_model,
                     ollama_embedding_model = excluded.ollama_embedding_model,
+                    interface_language = excluded.interface_language,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -286,12 +303,13 @@ class ChatRepository:
                     resolved_ollama_base_url,
                     ollama_chat_model,
                     ollama_embedding_model,
+                    interface_language,
                     datetime.now(tz=timezone.utc).isoformat(),
                 ),
             )
     
     def get_user_settings(self, user_id: str) -> Optional[dict]:
-        """Get user settings (returns dict with openai_api_key, etc.)."""
+        """Get user settings (returns dict with openai_api_key, interface_language, etc.)."""
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -302,7 +320,8 @@ class ChatRepository:
                     openai_embedding_model,
                     ollama_base_url,
                     ollama_chat_model,
-                    ollama_embedding_model
+                    ollama_embedding_model,
+                    interface_language
                 FROM user_settings
                 WHERE user_id = ?
                 """,

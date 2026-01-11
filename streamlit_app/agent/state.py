@@ -31,6 +31,7 @@ class AgentState(TypedDict):
     budget: Optional[Dict[str, Any]]  # Serialized AgentBudget state
     budget_exceeded: Optional[bool]  # True if budget limits were hit
     budget_status: Optional[Dict[str, Any]]  # Current budget status for debugging
+    detected_language: Optional[Literal["it", "en"]]  # Detected language from user message ("it" for Italian, "en" for English)
 
 
 # Dataset presets configuration

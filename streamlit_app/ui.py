@@ -110,6 +110,25 @@ class ChatUI:
             settings: UserLlmSettings = st.session_state.llm_settings
             st.session_state.llm_block_reason = None
 
+            # Language selector
+            language_options = {"🇮🇹 Italiano": "it", "🇬🇧 English": "en"}
+            language_labels = list(language_options.keys())
+            current_lang_index = 0 if settings.interface_language == "it" else 1
+            
+            selected_language_label = st.selectbox(
+                "🌐 Lingua / Language",
+                options=language_labels,
+                index=current_lang_index,
+                help="Scegli la lingua dell'assistente / Choose assistant language",
+            )
+            
+            selected_language = language_options[selected_language_label]
+            if selected_language != settings.interface_language:
+                settings.interface_language = selected_language
+                self._service.save_user_llm_settings(settings)
+                self._service._agent = None  # Reset agent to apply new language
+                st.rerun()
+
             provider = st.selectbox(
                 "Provider LLM",
                 options=["openai", "ollama"],
@@ -639,6 +658,15 @@ class ChatUI:
             with st.chat_message(message.role):
                 # Check if message contains chart or map data
                 if message.role == "assistant":
+                    # Show saved reasoning if present (in collapsed expander)
+                    if hasattr(message, 'reasoning') and message.reasoning:
+                        with st.expander("🧠 Processo di ragionamento", expanded=False):
+                            # Split reasoning into steps and format them
+                            reasoning_steps = message.reasoning.split("\n")
+                            for step in reasoning_steps:
+                                if step.strip():
+                                    st.markdown(step)
+                    
                     # First check for chart data
                     text_content, chart_data = self._extract_chart_from_response(message.content)
                     

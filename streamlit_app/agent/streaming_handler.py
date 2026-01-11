@@ -12,6 +12,30 @@ class StreamingHandler:
     """Handler for formatting streaming responses from the agent."""
     
     @staticmethod
+    def handle_language_detector_event(node_output: Dict[str, Any]) -> Dict[str, str]:
+        """Handle language detector node events.
+        
+        Args:
+            node_output: Output from language_detector node
+            
+        Returns:
+            Dict with type and content for streaming, or None if no display needed
+        """
+        detected_language = node_output.get("detected_language", "it")
+        
+        language_names = {
+            "it": "Italiano",
+            "en": "English"
+        }
+        
+        language_name = language_names.get(detected_language, "Italiano")
+        
+        reasoning = "🌐 **Lingua / Language**\n\n"
+        reasoning += f"**{language_name}**\n"
+        
+        return {"type": "reasoning", "content": reasoning}
+    
+    @staticmethod
     def handle_context_manager_event(node_output: Dict[str, Any], original_count: int) -> Dict[str, str]:
         """Handle context manager node events.
         

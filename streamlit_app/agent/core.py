@@ -67,7 +67,8 @@ class TreeEvaluatorAgent:
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
         data_description: str = "",
-        dataset_preset: str = "vienna"
+        dataset_preset: str = "vienna",
+        interface_language: str = "it"
     ) -> None:
         """Initialize the agent with tools and LLM.
 
@@ -83,6 +84,7 @@ class TreeEvaluatorAgent:
             custom_table_name: Optional custom table name in the database
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
+            interface_language: Language for agent responses ("it" for Italian, "en" for English)
         """
         # Initialize LLM settings and factory
         self._llm_settings: LlmSettings = LlmSettingsReader().read(
@@ -108,6 +110,9 @@ class TreeEvaluatorAgent:
         self._base_llm = self._llm_factory.create_chat_model()
         self._fallback_llm = self._llm_factory.create_fallback_chat_model()
         self._embeddings = self._llm_factory.create_embeddings()
+
+        # Store interface language (user preference from settings)
+        self._interface_language = interface_language if interface_language in ["it", "en"] else "it"
 
         # Initialize tools
         self._tools = self._initialize_tools(custom_db_path, custom_table_name, data_description, dataset_preset)
@@ -299,14 +304,37 @@ class TreeEvaluatorAgent:
                 break
 
         if not last_user_msg:
-            return {"optimized_query": None, "tasks": []}
+            return {"optimized_query": None, "tasks": [], "detected_language": self._interface_language}
+
+        # Use the configured interface language from user settings
+        detected_language = self._interface_language
 
         # For simple/short queries, skip optimization
         if len(last_user_msg) < 50:
-            return {"optimized_query": last_user_msg, "tasks": [last_user_msg]}
+            return {"optimized_query": last_user_msg, "tasks": [last_user_msg], "detected_language": detected_language}
 
         # Use LLM to optimize query
-        optimizer_prompt = f"""Analizza la seguente domanda e crea 2-3 task semplici.
+        if detected_language == "en":
+            optimizer_prompt = f"""Analyze the following question and create 2-3 simple tasks.
+
+Question: {last_user_msg}
+
+Respond ONLY in JSON format:
+{{
+    "optimized_query": "briefly rephrased question",
+    "tasks": ["task 1", "task 2"]
+}}
+
+RULES:
+- Maximum 3 tasks
+- Short and direct tasks
+- If the question is already clear, return the original question with 1 task"""
+            optimization_msg_template = """Optimized query: {optimized_query}
+
+Tasks to complete:
+{tasks}"""
+        else:
+            optimizer_prompt = f"""Analizza la seguente domanda e crea 2-3 task semplici.
 
 Domanda: {last_user_msg}
 
@@ -320,6 +348,10 @@ REGOLE:
 - Massimo 3 task
 - Task brevi e diretti
 - Se la domanda è già chiara, restituisci la domanda originale con 1 task"""
+            optimization_msg_template = """Query ottimizzata: {optimized_query}
+
+Task da completare:
+{tasks}"""
 
         try:
             optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
@@ -336,17 +368,15 @@ REGOLE:
             optimized_query = optimization_result.get("optimized_query", last_user_msg)
             tasks = optimization_result.get("tasks", [])
 
+            tasks_text = chr(10).join(f'{i+1}. {task}' for i, task in enumerate(tasks))
             optimization_msg = SystemMessage(
-                content=f"""Query ottimizzata: {optimized_query}
-
-Task da completare:
-{chr(10).join(f'{i+1}. {task}' for i, task in enumerate(tasks))}"""
+                content=optimization_msg_template.format(optimized_query=optimized_query, tasks=tasks_text)
             )
 
-            return {"messages": [optimization_msg], "optimized_query": optimized_query, "tasks": tasks}
+            return {"messages": [optimization_msg], "optimized_query": optimized_query, "tasks": tasks, "detected_language": detected_language}
 
         except Exception:
-            return {"optimized_query": last_user_msg, "tasks": [last_user_msg]}
+            return {"optimized_query": last_user_msg, "tasks": [last_user_msg], "detected_language": detected_language}
 
     def _check_budget(self, state: AgentState) -> dict:
         """Check budget constraints before tool execution."""
@@ -365,7 +395,10 @@ Task da completare:
 
         if not can_proceed:
             # Budget exceeded - generate conversational response
-            conversational_response = self._generate_conversational_summary(messages, status)
+            detected_language = state.get("detected_language", "it")
+            if detected_language not in ["it", "en"]:
+                detected_language = "it"
+            conversational_response = self._generate_conversational_summary(messages, status, detected_language)
             return {
                 "messages": [AIMessage(content=conversational_response)],
                 "budget": budget.to_dict(),
@@ -379,7 +412,7 @@ Task da completare:
             "budget_status": status,
         }
 
-    def _generate_conversational_summary(self, messages: Sequence[BaseMessage], budget_status: Dict[str, Any]) -> str:
+    def _generate_conversational_summary(self, messages: Sequence[BaseMessage], budget_status: Dict[str, Any], language: Literal["it", "en"] = "it") -> str:
         """Generate a conversational response summarizing results collected so far."""
         # Extract user's original question
         user_question = ""
@@ -391,11 +424,18 @@ Task da completare:
         tool_results = self._extractor.extract_tool_results(messages)
 
         if not tool_results:
-            return (
-                "Non ho ancora raccolto abbastanza dati per rispondere completamente.\n\n"
-                "**Suggerimento:** Prova a riformulare la domanda in modo più specifico.\n\n"
-                "Tool utilizzati: Nessuno"
-            )
+            if language == "en":
+                return (
+                    "I haven't collected enough data to answer completely yet.\n\n"
+                    "**Suggestion:** Try rephrasing the question more specifically.\n\n"
+                    "Tools used: None"
+                )
+            else:
+                return (
+                    "Non ho ancora raccolto abbastanza dati per rispondere completamente.\n\n"
+                    "**Suggerimento:** Prova a riformulare la domanda in modo più specifico.\n\n"
+                    "Tool utilizzati: Nessuno"
+                )
 
         tools_used = list(set(r["tool"] for r in tool_results))
 
@@ -406,7 +446,28 @@ Task da completare:
             # Format results for summary
             results_text = self._format_tool_results_for_summary(tool_results)
 
-            summary_prompt = f"""Genera una risposta conversazionale e amichevole in italiano.
+            if language == "en":
+                summary_prompt = f"""Generate a conversational and friendly response in English.
+
+User's question: {user_question}
+
+Results collected from tools:
+{results_text}
+
+Tools used: {', '.join(tools_used)}
+
+INSTRUCTIONS:
+1. Respond naturally and conversationally
+2. Use the provided data to answer the question
+3. If data is incomplete, explain what you found and what's missing
+4. Include appropriate units of measurement
+5. End with "Tools used: [tool list]"
+6. DO NOT invent data that is not in the results
+
+Response:"""
+                tool_citation_prefix = "Tools used:"
+            else:
+                summary_prompt = f"""Genera una risposta conversazionale e amichevole in italiano.
 
 Domanda dell'utente: {user_question}
 
@@ -424,28 +485,39 @@ ISTRUZIONI:
 6. NON inventare dati che non sono nei risultati
 
 Risposta:"""
+                tool_citation_prefix = "Tool utilizzati:"
 
             response = summary_llm.invoke([HumanMessage(content=summary_prompt)])
             summary = response.content.strip()
 
             # Ensure tool citation is present
-            if "Tool utilizzati" not in summary:
-                summary += f"\n\nTool utilizzati: {', '.join(tools_used)}"
+            if tool_citation_prefix not in summary:
+                summary += f"\n\n{tool_citation_prefix} {', '.join(tools_used)}"
 
             return summary
 
         except Exception:
             # Fallback to basic summary
-            summary = f"**Risultati raccolti per:** {user_question}\n\n"
-            for tr in tool_results[:3]:
-                result = tr.get("result", {})
-                if isinstance(result, dict):
-                    if "co2_stock_t" in result:
-                        summary += f"- **CO2 stock:** {result.get('co2_stock_t', 'N/A')} t CO2\n"
-                    if "total_biomass_t" in result:
-                        summary += f"- **Biomassa totale:** {result.get('total_biomass_t', 'N/A')} t\n"
-
-            summary += f"\n\nTool utilizzati: {', '.join(tools_used)}"
+            if language == "en":
+                summary = f"**Results collected for:** {user_question}\n\n"
+                for tr in tool_results[:3]:
+                    result = tr.get("result", {})
+                    if isinstance(result, dict):
+                        if "co2_stock_t" in result:
+                            summary += f"- **CO2 stock:** {result.get('co2_stock_t', 'N/A')} t CO2\n"
+                        if "total_biomass_t" in result:
+                            summary += f"- **Total biomass:** {result.get('total_biomass_t', 'N/A')} t\n"
+                summary += f"\n\nTools used: {', '.join(tools_used)}"
+            else:
+                summary = f"**Risultati raccolti per:** {user_question}\n\n"
+                for tr in tool_results[:3]:
+                    result = tr.get("result", {})
+                    if isinstance(result, dict):
+                        if "co2_stock_t" in result:
+                            summary += f"- **CO2 stock:** {result.get('co2_stock_t', 'N/A')} t CO2\n"
+                        if "total_biomass_t" in result:
+                            summary += f"- **Biomassa totale:** {result.get('total_biomass_t', 'N/A')} t\n"
+                summary += f"\n\nTool utilizzati: {', '.join(tools_used)}"
             return summary
 
     def _format_tool_results_for_summary(self, tool_results: List[Dict]) -> str:
@@ -474,16 +546,25 @@ Risposta:"""
         """Call the LLM model."""
         messages = state["messages"]
 
-        # Add system message if not present
-        if not any(isinstance(m, SystemMessage) for m in messages):
-            system_msg = SystemMessage(content=SystemPrompts.MAIN_SYSTEM_PROMPT)
-            messages = [system_msg] + list(messages)
+        # Get detected language from state (default to Italian)
+        detected_language = state.get("detected_language", "it")
+        if detected_language not in ["it", "en"]:
+            detected_language = "it"
+
+        # ALWAYS replace/add system message with correct language
+        # Remove any existing system messages first
+        messages = [m for m in messages if not isinstance(m, SystemMessage)]
+        # Add system message with correct language
+        system_prompt = SystemPrompts.get_system_prompt(detected_language)
+        system_msg = SystemMessage(content=system_prompt)
+        messages = [system_msg] + list(messages)
 
         # Truncate messages to save tokens
+        truncate_label = "... [truncated]" if detected_language == "en" else "... [troncato]"
         def _truncate(msg: BaseMessage, max_len: int = 800) -> BaseMessage:
             content = (msg.content or "") if hasattr(msg, "content") else ""
             if len(content) > max_len:
-                content = content[:max_len] + "... [troncato]"
+                content = content[:max_len] + truncate_label
             if isinstance(msg, HumanMessage):
                 return HumanMessage(content=content)
             if isinstance(msg, AIMessage):

@@ -71,6 +71,7 @@ class ChatService:
             ollama_base_url=str(raw.get("ollama_base_url") or defaults.ollama_base_url),
             ollama_chat_model=str(raw.get("ollama_chat_model") or defaults.ollama_chat_model),
             ollama_embedding_model=str(raw.get("ollama_embedding_model") or defaults.ollama_embedding_model),
+            interface_language=str(raw.get("interface_language") or defaults.interface_language),
         )
 
     def save_user_llm_settings(self, settings: UserLlmSettings) -> None:
@@ -83,6 +84,7 @@ class ChatService:
             ollama_base_url=settings.ollama_base_url,
             ollama_chat_model=settings.ollama_chat_model,
             ollama_embedding_model=settings.ollama_embedding_model,
+            interface_language=settings.interface_language,
         )
 
     # Message management
@@ -136,7 +138,8 @@ class ChatService:
                     ollama_embedding_model=preferences.ollama_embedding_model,
                     custom_db_path=Path(custom_db_path),
                     custom_table_name=custom_table_name,
-                    data_description=data_description
+                    data_description=data_description,
+                    interface_language=preferences.interface_language
                 )
             elif selected_preset == "milano":
                 # Milano preset dataset
@@ -148,7 +151,8 @@ class ChatService:
                     ollama_base_url=preferences.ollama_base_url,
                     ollama_chat_model=preferences.ollama_chat_model,
                     ollama_embedding_model=preferences.ollama_embedding_model,
-                    dataset_preset="milano"
+                    dataset_preset="milano",
+                    interface_language=preferences.interface_language
                 )
             else:
                 # Default: Vienna dataset
@@ -160,6 +164,7 @@ class ChatService:
                     ollama_base_url=preferences.ollama_base_url,
                     ollama_chat_model=preferences.ollama_chat_model,
                     ollama_embedding_model=preferences.ollama_embedding_model,
+                    interface_language=preferences.interface_language
                 )
             
             return self._agent
@@ -242,19 +247,25 @@ class ChatService:
                 
                 # Stream response from agent
                 full_response = ""
+                reasoning_steps = []  # Collect reasoning steps
                 for chunk in agent.stream_chat(last_user_message, history=history_dicts):
                     # chunk is a dict with 'type' and 'content'
                     if chunk.get("type") == "response":
                         full_response = chunk.get("content", "")
+                    elif chunk.get("type") == "reasoning":
+                        reasoning_steps.append(chunk.get("content", ""))
                     yield chunk
                 
-                # After streaming, save complete message
+                # After streaming, save complete message with reasoning
                 if full_response:
+                    # Combine reasoning steps into a single string
+                    reasoning_text = "\n".join(reasoning_steps) if reasoning_steps else None
                     reply = ChatMessage.new(
                         user_id=user_id,
                         conversation_id=conversation_id,
                         role="assistant",
-                        content=full_response
+                        content=full_response,
+                        reasoning=reasoning_text
                     )
                     self._repository.add_message(reply)
                     return reply

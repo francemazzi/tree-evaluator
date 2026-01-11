@@ -240,3 +240,4 @@ Translation ({target_lang_name}):"""
                 "error": f"Translation failed: {str(e)}"
             }
 
+

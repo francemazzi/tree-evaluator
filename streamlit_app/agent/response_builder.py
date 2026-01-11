@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import List, Literal, Sequence
 
 from langchain_core.messages import BaseMessage, HumanMessage
 
@@ -13,18 +13,47 @@ class ResponseBuilder:
     """Builder for constructing formatted responses."""
     
     @staticmethod
-    def format_dataset_results(results: List[dict], messages: Sequence[BaseMessage]) -> str:
+    def format_dataset_results(results: List[dict], messages: Sequence[BaseMessage], language: Literal["it", "en"] = "it") -> str:
         """Format dataset results as a user-friendly response.
         
         Args:
             results: List of result dictionaries
             messages: Conversation messages for context
+            language: Language code ("it" for Italian, "en" for English)
             
         Returns:
             Formatted response string
         """
+        # Define language-specific strings
+        if language == "en":
+            no_results_msg = "I didn't find any results for your request.\n\nTools used: Dataset Query Tool"
+            species_header = f"Here are the {len(results)} most common species in the dataset:\n\n"
+            trees_label = "trees"
+            district_header = f"Here are the {len(results)} districts:\n\n"
+            district_label = "District"
+            data_label = "\n📊 Data: Vienna Trees Dataset (BAUMKATOGD)\n"
+            tools_used_label = "\nTools used: Dataset Query Tool"
+            found_results = f"I found {len(results)} results:\n\n"
+            and_others = f"\n... and {len(results) - 20} more results\n"
+            # Format numbers with English notation (comma for thousands, dot for decimals)
+            def format_number(n):
+                return f"{n:,}"
+        else:
+            no_results_msg = "Non ho trovato risultati per la tua richiesta.\n\nTool utilizzati: Dataset Query Tool"
+            species_header = f"Ecco le {len(results)} specie più diffuse nel dataset:\n\n"
+            trees_label = "alberi"
+            district_header = f"Ecco i {len(results)} distretti:\n\n"
+            district_label = "Distretto"
+            data_label = "\n📊 Dati: Vienna Trees Dataset (BAUMKATOGD)\n"
+            tools_used_label = "\nTool utilizzati: Dataset Query Tool"
+            found_results = f"Ho trovato {len(results)} risultati:\n\n"
+            and_others = f"\n... e altri {len(results) - 20} risultati\n"
+            # Format numbers with Italian notation (dot for thousands, comma for decimals)
+            def format_number(n):
+                return f"{n:,}".replace(",", ".")
+        
         if not results:
-            return "Non ho trovato risultati per la tua richiesta.\n\nTool utilizzati: Dataset Query Tool"
+            return no_results_msg
         
         # Try to extract the original user question for context
         user_question = ""
@@ -37,57 +66,60 @@ class ResponseBuilder:
         
         # Case 1: Species count results (genus_species + count)
         if isinstance(first_row, dict) and "genus_species" in first_row and "count" in first_row:
-            response = f"Ecco le {len(results)} specie più diffuse nel dataset:\n\n"
+            response = species_header
             for i, row in enumerate(results, 1):
                 species = row.get("genus_species", "N/A")
                 count = row.get("count", 0)
-                count_formatted = f"{count:,}".replace(",", ".")
-                response += f"{i}. **{species}**: {count_formatted} alberi\n"
+                count_formatted = format_number(count)
+                response += f"{i}. **{species}**: {count_formatted} {trees_label}\n"
             
-            response += "\n📊 Dati: Vienna Trees Dataset (BAUMKATOGD)\n"
-            response += "\nTool utilizzati: Dataset Query Tool"
+            response += data_label
+            response += tools_used_label
             return response
         
         # Case 2: District count results (district + count)
         if isinstance(first_row, dict) and "district" in first_row and "count" in first_row:
-            response = f"Ecco i {len(results)} distretti:\n\n"
+            response = district_header
             for i, row in enumerate(results, 1):
                 district = row.get("district", "N/A")
                 count = row.get("count", 0)
-                count_formatted = f"{count:,}".replace(",", ".")
-                response += f"{i}. Distretto **{district}**: {count_formatted} alberi\n"
+                count_formatted = format_number(count)
+                response += f"{i}. {district_label} **{district}**: {count_formatted} {trees_label}\n"
             
-            response += "\n📊 Dati: Vienna Trees Dataset (BAUMKATOGD)\n"
-            response += "\nTool utilizzati: Dataset Query Tool"
+            response += data_label
+            response += tools_used_label
             return response
         
         # Case 3: Single value result
         if isinstance(first_row, dict) and len(first_row) == 1:
             key, value = list(first_row.items())[0]
             if isinstance(value, (int, float)):
-                value_formatted = f"{value:,}".replace(",", ".")
+                value_formatted = format_number(value) if isinstance(value, int) else f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if language == "it" else f"{value:,.2f}"
                 response = f"**{key}**: {value_formatted}\n\n"
-                response += "Tool utilizzati: Dataset Query Tool"
+                response += tools_used_label
                 return response
         
         # Case 4: Generic results - format as table
-        response = f"Ho trovato {len(results)} risultati:\n\n"
+        response = found_results
         for i, row in enumerate(results[:20], 1):
             if isinstance(row, dict):
                 row_parts = []
                 for key, value in row.items():
                     if value is not None:
                         if isinstance(value, (int, float)) and not isinstance(value, bool):
-                            value_str = f"{value:,}".replace(",", ".")
+                            if isinstance(value, int):
+                                value_str = format_number(value)
+                            else:
+                                value_str = f"{value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if language == "it" else f"{value:,.2f}"
                         else:
                             value_str = str(value)
                         row_parts.append(f"{key}: {value_str}")
                 response += f"{i}. {', '.join(row_parts)}\n"
         
         if len(results) > 20:
-            response += f"\n... e altri {len(results) - 20} risultati\n"
+            response += and_others
         
-        response += "\nTool utilizzati: Dataset Query Tool"
+        response += tools_used_label
         return response
     
     @staticmethod
