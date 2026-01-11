@@ -793,37 +793,51 @@ Risposta:"""
             config={"recursion_limit": 30},
             stream_mode="updates",
         ):
+            # Get language from state or use interface language
+            current_language = self._interface_language
+            if "detected_language" in event.get("query_optimizer", {}):
+                current_language = event["query_optimizer"].get("detected_language", self._interface_language)
+            
             # Process each node event
             for node_name, node_output in event.items():
                 result = None
 
-                if node_name == "context_manager":
-                    result = StreamingHandler.handle_context_manager_event(node_output, len(messages))
+                if node_name == "language_detector":
+                    result = StreamingHandler.handle_language_detector_event(node_output, current_language)
+                elif node_name == "context_manager":
+                    result = StreamingHandler.handle_context_manager_event(node_output, len(messages), current_language)
                 elif node_name == "query_optimizer":
-                    result = StreamingHandler.handle_query_optimizer_event(node_output)
+                    # Update language from optimizer output
+                    if "detected_language" in node_output:
+                        current_language = node_output.get("detected_language", self._interface_language)
+                    result = StreamingHandler.handle_query_optimizer_event(node_output, current_language)
                 elif node_name == "agent":
-                    result = StreamingHandler.handle_agent_event(node_output)
+                    result = StreamingHandler.handle_agent_event(node_output, current_language)
                     if result and result.get("type") == "final_response":
                         final_response = result.get("content")
                         result = None  # Don't yield yet
                 elif node_name == "tools":
-                    result, chart_json, map_json = StreamingHandler.handle_tools_event(node_output)
+                    result, chart_json, map_json = StreamingHandler.handle_tools_event(node_output, current_language)
                     if chart_json:
                         chart_data_json = chart_json
                     if map_json:
                         map_data_json = map_json
                 elif node_name == "budget_check":
-                    result = StreamingHandler.handle_budget_check_event(node_output)
+                    result = StreamingHandler.handle_budget_check_event(node_output, current_language)
                     if result and "final_response" in result:
                         final_response = result.pop("final_response")
                 elif node_name == "tool_loop_guard":
-                    result = StreamingHandler.handle_tool_loop_guard_event(node_output)
+                    result = StreamingHandler.handle_tool_loop_guard_event(node_output, current_language)
                     if result and "final_response" in result:
                         final_response = result.pop("final_response")
                 elif node_name == "tool_loop_replanner":
-                    result = {"type": "reasoning", "content": "🧠 **Replanning**\n\nSto riformulando il prossimo passo per evitare ripetizioni.\n"}
+                    from streamlit_app.agent.translations import get_translation
+                    result = {
+                        "type": "reasoning", 
+                        "content": f"{get_translation('replanning', current_language)}\n\n{get_translation('reformulating_step', current_language)}\n"
+                    }
                 elif node_name == "validator":
-                    result, retry_count = StreamingHandler.handle_validator_event(node_output, retry_count, max_retries)
+                    result, retry_count = StreamingHandler.handle_validator_event(node_output, retry_count, max_retries, current_language)
 
                 if result:
                     yield result

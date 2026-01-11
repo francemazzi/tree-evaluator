@@ -3,45 +3,44 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Literal
 
 from langchain_core.messages import AIMessage
+
+from streamlit_app.agent.translations import Language, format_translation, get_translation
 
 
 class StreamingHandler:
     """Handler for formatting streaming responses from the agent."""
     
     @staticmethod
-    def handle_language_detector_event(node_output: Dict[str, Any]) -> Dict[str, str]:
+    def handle_language_detector_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, str]:
         """Handle language detector node events.
         
         Args:
             node_output: Output from language_detector node
+            language: Language for messages ("it" or "en")
             
         Returns:
             Dict with type and content for streaming, or None if no display needed
         """
         detected_language = node_output.get("detected_language", "it")
         
-        language_names = {
-            "it": "Italiano",
-            "en": "English"
-        }
-        
-        language_name = language_names.get(detected_language, "Italiano")
+        language_name = get_translation("language_detected", detected_language)
         
         reasoning = "🌐 **Lingua / Language**\n\n"
-        reasoning += f"**{language_name}**\n"
+        reasoning += f"{language_name}\n"
         
         return {"type": "reasoning", "content": reasoning}
     
     @staticmethod
-    def handle_context_manager_event(node_output: Dict[str, Any], original_count: int) -> Dict[str, str]:
+    def handle_context_manager_event(node_output: Dict[str, Any], original_count: int, language: Language = "it") -> Dict[str, str]:
         """Handle context manager node events.
         
         Args:
             node_output: Output from context_manager node
             original_count: Original message count
+            language: Language for messages ("it" or "en")
             
         Returns:
             Dict with type and content for streaming
@@ -49,24 +48,29 @@ class StreamingHandler:
         message_count = node_output.get("message_count", 0)
         
         if message_count < original_count:
-            reasoning = "🧹 **Gestione Contesto**\n\n"
-            reasoning += f"Messaggi originali: {original_count}\n"
-            reasoning += f"Messaggi ottimizzati: {message_count}\n"
-            reasoning += "Contesto lungo compresso per evitare limiti di token.\n"
+            reasoning = f"{get_translation('context_management', language)}\n\n"
+            reasoning += f"{get_translation('original_messages', language)}: {original_count}\n"
+            reasoning += f"{get_translation('optimized_messages', language)}: {message_count}\n"
+            reasoning += f"{get_translation('context_compressed', language)}\n"
             return {"type": "reasoning", "content": reasoning}
         return None
     
     @staticmethod
-    def handle_query_optimizer_event(node_output: Dict[str, Any]) -> Dict[str, str]:
-        """Handle query optimizer node events."""
+    def handle_query_optimizer_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, str]:
+        """Handle query optimizer node events.
+        
+        Args:
+            node_output: Output from query_optimizer node
+            language: Language for messages ("it" or "en")
+        """
         optimized = node_output.get("optimized_query", "")
         tasks = node_output.get("tasks", [])
         
         if optimized:
-            reasoning = "🔍 **Ottimizzazione Query**\n\n"
-            reasoning += f"Query ottimizzata: *{optimized}*\n\n"
+            reasoning = f"{get_translation('query_optimization', language)}\n\n"
+            reasoning += f"{get_translation('optimized_query_label', language)}: *{optimized}*\n\n"
             if tasks:
-                reasoning += "**Task identificati:**\n\n<ol>\n"
+                reasoning += f"{get_translation('tasks_identified', language)}\n\n<ol>\n"
                 for task in tasks:
                     reasoning += f"<li>{task}</li>\n"
                 reasoning += "</ol>\n\n"
@@ -74,8 +78,13 @@ class StreamingHandler:
         return None
     
     @staticmethod
-    def handle_agent_event(node_output: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle agent node events (tool calls or responses)."""
+    def handle_agent_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, Any]:
+        """Handle agent node events (tool calls or responses).
+        
+        Args:
+            node_output: Output from agent node
+            language: Language for messages ("it" or "en")
+        """
         node_messages = node_output.get("messages", [])
         if not node_messages:
             return None
@@ -86,13 +95,13 @@ class StreamingHandler:
         
         if last_msg.tool_calls:
             # Agent is calling tools
-            reasoning = "🛠️ **Chiamata Tool**\n\n"
+            reasoning = f"{get_translation('tool_call', language)}\n\n"
             for tool_call in last_msg.tool_calls:
                 tool_name = tool_call.get("name", "unknown")
                 tool_args = tool_call.get("args", {})
                 
-                reasoning += f"- **Tool**: `{tool_name}`\n"
-                reasoning += StreamingHandler._format_tool_args(tool_name, tool_args)
+                reasoning += f"- **{get_translation('tool', language)}**: `{tool_name}`\n"
+                reasoning += StreamingHandler._format_tool_args(tool_name, tool_args, language)
                 reasoning += "\n"
             
             return {"type": "reasoning", "content": reasoning}
@@ -103,29 +112,39 @@ class StreamingHandler:
         return None
     
     @staticmethod
-    def _format_tool_args(tool_name: str, tool_args: Dict[str, Any]) -> str:
-        """Format tool arguments for display."""
+    def _format_tool_args(tool_name: str, tool_args: Dict[str, Any], language: Language = "it") -> str:
+        """Format tool arguments for display.
+        
+        Args:
+            tool_name: Name of the tool
+            tool_args: Tool arguments
+            language: Language for messages ("it" or "en")
+        """
         if tool_name == "query_tree_dataset":
             natural_q = tool_args.get("natural_query", "N/A")
-            return f"  - **Query**: _{natural_q}_\n"
+            return f"  - **{get_translation('query', language)}**: _{natural_q}_\n"
         elif tool_name in ("calculate_co2", "estimate_environment"):
             dbh = tool_args.get("dbh_cm", "N/A")
             height = tool_args.get("height_m", "N/A")
-            result = f"  - **DBH**: {dbh} cm\n  - **Altezza**: {height} m\n"
+            result = f"  - **{get_translation('dbh', language)}**: {dbh} cm\n  - **{get_translation('height', language)}**: {height} m\n"
             if "wood_density" in tool_args:
-                result += f"  - **Densità legno**: {tool_args['wood_density']} g/cm³\n"
+                result += f"  - **{get_translation('wood_density', language)}**: {tool_args['wood_density']} g/cm³\n"
             return result
         elif tool_name == "calculate_co2_aggregate":
             query = tool_args.get("natural_query", "N/A")
-            return f"  - **Query**: _{query}_\n"
+            return f"  - **{get_translation('query', language)}**: _{query}_\n"
         elif tool_name == "generate_chart":
             chart_type = tool_args.get("chart_type", "N/A")
-            return f"  - **Tipo grafico**: {chart_type}\n"
+            return f"  - **{get_translation('chart_type', language)}**: {chart_type}\n"
         return ""
     
     @staticmethod
-    def handle_tools_event(node_output: Dict[str, Any]) -> tuple:
+    def handle_tools_event(node_output: Dict[str, Any], language: Language = "it") -> tuple:
         """Handle tools node events (tool results).
+        
+        Args:
+            node_output: Output from tools node
+            language: Language for messages ("it" or "en")
         
         Returns:
             Tuple of (reasoning_dict, chart_json, map_json)
@@ -153,26 +172,31 @@ class StreamingHandler:
                     map_data_json = json.dumps(result_data, ensure_ascii=False, indent=2)
                 
                 # Build reasoning message
-                reasoning = "✅ **Risultati Tool**\n\n"
-                reasoning += StreamingHandler._format_tool_results(result_data)
+                reasoning = f"{get_translation('tool_results', language)}\n\n"
+                reasoning += StreamingHandler._format_tool_results(result_data, language)
                 
                 return {"type": "reasoning", "content": reasoning}, chart_data_json, map_data_json
                 
             except (json.JSONDecodeError, AttributeError):
-                reasoning = "✅ **Tool Eseguito**\n\nElaborazione risultati...\n"
+                reasoning = f"{get_translation('tool_executed', language)}\n\n{get_translation('processing_results', language)}\n"
                 return {"type": "reasoning", "content": reasoning}, chart_data_json, map_data_json
         
         return None, chart_data_json, map_data_json
     
     @staticmethod
-    def _format_tool_results(result_data: Dict[str, Any]) -> str:
-        """Format tool results for display."""
+    def _format_tool_results(result_data: Dict[str, Any], language: Language = "it") -> str:
+        """Format tool results for display.
+        
+        Args:
+            result_data: Tool result data
+            language: Language for messages ("it" or "en")
+        """
         output = ""
         
         # SQL query
         if "sql_executed" in result_data:
             sql = result_data.get("sql_executed", "")
-            output += f"**Query SQL generata:**\n```sql\n{sql}\n```\n\n"
+            output += f"{get_translation('sql_query_generated', language)}\n```sql\n{sql}\n```\n\n"
         
         # Row count with vector search info
         if "row_count" in result_data:
@@ -180,37 +204,37 @@ class StreamingHandler:
             
             if result_data.get("vector_search_applied", False):
                 total_found = result_data.get("total_rows_found", row_count)
-                output += "🔍 **Vector Search Applicata**\n"
-                output += f"📊 **Righe totali trovate**: {total_found}\n"
-                output += f"✨ **Top risultati più rilevanti**: {row_count}\n"
+                output += f"{get_translation('vector_search_applied', language)}\n"
+                output += f"📊 {get_translation('total_rows_found', language)}: {total_found}\n"
+                output += f"✨ {get_translation('top_relevant_results', language)}: {row_count}\n"
                 if "info" in result_data:
                     output += f"ℹ️  {result_data['info']}\n"
             else:
-                output += f"📊 **Righe trovate**: {row_count}\n"
+                output += f"📊 {get_translation('rows_found', language)}: {row_count}\n"
                 if "warning" in result_data:
-                    output += f"⚠️  **Attenzione**: {result_data['warning']}\n"
+                    output += f"⚠️  {get_translation('warning', language)}: {result_data['warning']}\n"
             output += "\n"
         
         # Results preview
         if "results" in result_data:
             results = result_data.get("results", [])
             if results:
-                output += "**Primi risultati:**\n\n<ol>\n"
+                output += f"{get_translation('first_results', language)}\n\n<ol>\n"
                 for row in results[:3]:
                     output += "<li>"
                     if "genus_species" in row:
-                        output += f"Specie: {row['genus_species']} "
+                        output += f"{get_translation('species', language)}: {row['genus_species']} "
                     if "count" in row:
-                        output += f"Count: {row['count']} "
+                        output += f"{get_translation('count', language)}: {row['count']} "
                     if "district" in row:
-                        output += f"Distretto: {row['district']} "
+                        output += f"{get_translation('district', language)}: {row['district']} "
                     if "trunk_circumference" in row:
-                        output += f"Circonferenza: {row['trunk_circumference']}cm "
+                        output += f"{get_translation('circumference', language)}: {row['trunk_circumference']}cm "
                     output += "</li>\n"
                 output += "</ol>\n"
                 
                 if len(results) > 3:
-                    output += f"... e altri {len(results) - 3} risultati\n"
+                    output += format_translation('and_others', language, count=len(results) - 3) + "\n"
         
         # Single value results
         elif "result" in result_data and "column" in result_data:
@@ -221,13 +245,18 @@ class StreamingHandler:
         # CO2 results
         if "co2_sequestration_kg" in result_data:
             co2 = result_data.get("co2_sequestration_kg", 0)
-            output += f"🌱 **CO2 sequestrato**: {co2} kg\n"
+            output += f"🌱 {get_translation('co2_sequestered', language)}: {co2} kg\n"
         
         return output
     
     @staticmethod
-    def handle_budget_check_event(node_output: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle budget check node events."""
+    def handle_budget_check_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, Any]:
+        """Handle budget check node events.
+        
+        Args:
+            node_output: Output from budget_check node
+            language: Language for messages ("it" or "en")
+        """
         if node_output.get("budget_exceeded"):
             node_messages = node_output.get("messages", [])
             final_response = None
@@ -238,21 +267,26 @@ class StreamingHandler:
             
             return {
                 "type": "reasoning",
-                "content": "⚠️ **Budget Limit**\n\nLimite di esecuzione raggiunto. Interruzione per prevenire loop infiniti.\n",
+                "content": f"{get_translation('budget_limit', language)}\n\n{get_translation('execution_limit_reached', language)}\n",
                 "final_response": final_response
             }
         else:
             status = node_output.get("budget_status", {})
             if status:
-                reasoning = "✓ **Budget Check**\n\n"
-                reasoning += f"Tool calls: {status.get('total_tool_calls', 'N/A')}\n"
-                reasoning += f"Tempo: {status.get('elapsed_time', 'N/A')}\n"
+                reasoning = f"{get_translation('budget_check', language)}\n\n"
+                reasoning += f"{get_translation('tool_calls', language)}: {status.get('total_tool_calls', 'N/A')}\n"
+                reasoning += f"{get_translation('time', language)}: {status.get('elapsed_time', 'N/A')}\n"
                 return {"type": "reasoning", "content": reasoning}
         return None
     
     @staticmethod
-    def handle_tool_loop_guard_event(node_output: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle tool loop guard node events."""
+    def handle_tool_loop_guard_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, Any]:
+        """Handle tool loop guard node events.
+        
+        Args:
+            node_output: Output from tool_loop_guard node
+            language: Language for messages ("it" or "en")
+        """
         node_messages = node_output.get("messages", [])
         if node_messages:
             last_msg = node_messages[-1]
@@ -284,7 +318,7 @@ class StreamingHandler:
                 
                 result = {
                     "type": "reasoning",
-                    "content": "🛑 **Stop Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Interrompo ed entro in modalità chiarimento.\n",
+                    "content": f"{get_translation('stop_anti_loop', language)}\n\n{get_translation('repetition_detected', language)}\n",
                     "final_response": last_msg.content
                 }
                 
@@ -299,13 +333,19 @@ class StreamingHandler:
             if node_output.get("tool_loop_action") == "replan":
                 return {
                     "type": "reasoning",
-                    "content": "🔁 **Recovery Anti-Loop**\n\nRilevata ripetizione della stessa chiamata tool. Provo a cambiare strategia (replanning).\n"
+                    "content": f"{get_translation('recovery_anti_loop', language)}\n\n{get_translation('repetition_detected_replan', language)}\n"
                 }
         return None
     
     @staticmethod
-    def handle_validator_event(node_output: Dict[str, Any], retry_count: int, max_retries: int) -> tuple:
+    def handle_validator_event(node_output: Dict[str, Any], retry_count: int, max_retries: int, language: Language = "it") -> tuple:
         """Handle validator node events.
+        
+        Args:
+            node_output: Output from validator node
+            retry_count: Current retry count
+            max_retries: Maximum retries allowed
+            language: Language for messages ("it" or "en")
         
         Returns:
             Tuple of (reasoning_dict, new_retry_count)
@@ -314,21 +354,21 @@ class StreamingHandler:
         is_complete = validation.get("is_complete", True)
         
         if is_complete:
-            reasoning = "✓ **Validazione Completata**\n\nLa risposta è completa e accurata.\n"
+            reasoning = f"{get_translation('validation_completed', language)}\n\n{get_translation('response_complete_accurate', language)}\n"
             return {"type": "reasoning", "content": reasoning}, retry_count
         else:
             new_retry_count = retry_count + 1
             if new_retry_count > max_retries:
-                reasoning = "⚠️ **Validazione**\n\nRaggiunto limite retry. Proseguo con la risposta attuale.\n"
+                reasoning = f"{get_translation('validation', language)}\n\n{get_translation('retry_limit_reached', language)}\n"
                 return {"type": "reasoning", "content": reasoning}, new_retry_count
             else:
                 missing = validation.get("missing_tasks", [])
                 feedback = validation.get("feedback", "")
-                reasoning = f"⚠️ **Validazione (Tentativo {new_retry_count})**\n\n"
+                reasoning = format_translation('validation_attempt', language, count=new_retry_count) + "\n\n"
                 if missing:
-                    reasoning += f"Task mancanti: {', '.join(missing)}\n"
+                    reasoning += f"{get_translation('missing_tasks', language)}: {', '.join(missing)}\n"
                 if feedback:
                     reasoning += f"\n{feedback}\n"
-                reasoning += "\nRielaborazione risposta...\n"
+                reasoning += f"\n{get_translation('reprocessing_response', language)}\n"
                 return {"type": "reasoning", "content": reasoning}, new_retry_count
 
