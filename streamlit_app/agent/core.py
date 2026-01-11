@@ -729,6 +729,7 @@ Risposta:"""
                 "budget": initial_budget.to_dict(),
                 "budget_exceeded": False,
                 "budget_status": None,
+                "detected_language": self._interface_language,
             },
             config={"recursion_limit": 30},
         )
@@ -789,6 +790,7 @@ Risposta:"""
                 "budget": initial_budget.to_dict(),
                 "budget_exceeded": False,
                 "budget_status": None,
+                "detected_language": self._interface_language,
             },
             config={"recursion_limit": 30},
             stream_mode="updates",
