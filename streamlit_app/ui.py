@@ -310,7 +310,9 @@ class ChatUI:
             # Handle Vienna dataset
             if data_source == "🇦🇹 Dataset Vienna (229K alberi)":
                 # Clear custom dataset state
-                for key in ["custom_db_path", "custom_table_name", "data_description", 
+                # Note: Don't delete "data_description_input" as it's controlled by the widget
+                # The widget will reset automatically when stored_data_description is cleared
+                for key in ["custom_db_path", "custom_table_name", "stored_data_description",
                            "uploaded_file_name", "dataset_metadata", "selected_preset"]:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -331,7 +333,9 @@ class ChatUI:
             # Handle Milano dataset
             elif data_source == "🇮🇹 Dataset Milano (251K alberi)":
                 # Clear custom dataset state
-                for key in ["custom_db_path", "custom_table_name", "data_description", 
+                # Note: Don't delete "data_description_input" as it's controlled by the widget
+                # The widget will reset automatically when stored_data_description is cleared
+                for key in ["custom_db_path", "custom_table_name", "stored_data_description",
                            "uploaded_file_name", "dataset_metadata"]:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -361,17 +365,46 @@ class ChatUI:
                 )
                 
                 # Optional: description of the data
+                # #region agent log
+                import json
+                log_path = "/Users/francesco/Sviluppo/frasma_studio/tree-evaluator/.cursor/debug.log"
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix-v2", "hypothesisId": "A", "location": "ui.py:357", "message": "BEFORE text_area widget creation", "data": {"stored_data_description_in_state": "stored_data_description" in st.session_state, "data_description_input_in_state": "data_description_input" in st.session_state}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                except: pass
+                # #endregion
+                
+                # Use a different key for the widget to avoid conflicts
+                # Read stored value directly without initializing the widget key
+                # This avoids the "cannot be modified after widget instantiation" error
+                stored_value = st.session_state.get("stored_data_description", "")
+                
                 description = st.text_area(
                     "Descrizione dati (opzionale)",
+                    value=stored_value,
                     placeholder="Es: Questo dataset contiene vendite mensili per regione dal 2020 al 2024...",
-                    key="data_description",
+                    key="data_description_input",
                     help="Fornisci un contesto che aiuti l'AI a comprendere meglio i tuoi dati",
                     height=100
                 )
                 
+                # #region agent log
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "ui.py:380", "message": "AFTER text_area widget creation", "data": {"description_value": description, "description_type": type(description).__name__}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                except: pass
+                # #endregion
+                
                 if uploaded_file:
                     # Only process if file has changed or not yet processed
                     current_file_name = st.session_state.get("uploaded_file_name", None)
+                    
+                    # #region agent log
+                    try:
+                        with open(log_path, "a") as f:
+                            f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "B", "location": "ui.py:388", "message": "INSIDE uploaded_file block", "data": {"uploaded_file_name": uploaded_file.name, "current_file_name": current_file_name, "description_value": description}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                    except: pass
+                    # #endregion
                     
                     if current_file_name != uploaded_file.name:
                         with st.spinner("📥 Caricamento e conversione CSV in corso..."):
@@ -385,12 +418,27 @@ class ChatUI:
                                 # Process uploaded file
                                 db_path, table_name, metadata = manager.process_uploaded_file(uploaded_file)
                                 
+                                # #region agent log
+                                try:
+                                    with open(log_path, "a") as f:
+                                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "ui.py:405", "message": "BEFORE stored_data_description assignment", "data": {"description_value": description}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                                except: pass
+                                # #endregion
+                                
                                 # Update session state
+                                # Use stored_data_description instead of data_description to avoid widget conflict
                                 st.session_state.custom_db_path = str(db_path)
                                 st.session_state.custom_table_name = table_name
-                                st.session_state.data_description = description
+                                st.session_state.stored_data_description = description
                                 st.session_state.uploaded_file_name = uploaded_file.name
                                 st.session_state.dataset_metadata = metadata
+                                
+                                # #region agent log
+                                try:
+                                    with open(log_path, "a") as f:
+                                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "ui.py:415", "message": "AFTER stored_data_description assignment", "data": {"stored_data_description_in_state": "stored_data_description" in st.session_state, "assignment_successful": True}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                                except: pass
+                                # #endregion
                                 
                                 # Force agent re-initialization
                                 self._service._agent = None
@@ -408,6 +456,13 @@ class ChatUI:
                                         st.write(f"- {orig} → `{sql}`")
                                 
                             except Exception as e:
+                                # #region agent log
+                                try:
+                                    with open(log_path, "a") as f:
+                                        f.write(json.dumps({"sessionId": "debug-session", "runId": "post-fix", "hypothesisId": "A", "location": "ui.py:425", "message": "EXCEPTION caught", "data": {"error_type": type(e).__name__, "error_message": str(e)}, "timestamp": int(__import__("time").time() * 1000)}) + "\n")
+                                except: pass
+                                # #endregion
+                                
                                 st.error(f"❌ Errore nel caricamento: {str(e)}")
                                 # Clear any partial state
                                 if "custom_db_path" in st.session_state:
@@ -425,7 +480,9 @@ class ChatUI:
                 # Button to reset to default dataset
                 if st.button("🔄 Torna al Dataset Vienna", use_container_width=True):
                     # Clear custom dataset state
-                    for key in ["custom_db_path", "custom_table_name", "data_description", 
+                    # Note: Don't delete "data_description_input" as it's controlled by the widget
+                    # The widget will reset automatically when stored_data_description is cleared
+                    for key in ["custom_db_path", "custom_table_name", "stored_data_description",
                                "uploaded_file_name", "dataset_metadata", "selected_preset"]:
                         if key in st.session_state:
                             del st.session_state[key]

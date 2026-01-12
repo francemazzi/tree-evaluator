@@ -122,7 +122,8 @@ class ChatService:
             # Check if custom dataset is configured
             custom_db_path = st.session_state.get("custom_db_path", None)
             custom_table_name = st.session_state.get("custom_table_name", None)
-            data_description = st.session_state.get("data_description", "")
+            # Read from stored_data_description (saved value) or fallback to data_description_input (widget value)
+            data_description = st.session_state.get("stored_data_description", st.session_state.get("data_description_input", ""))
             selected_preset = st.session_state.get("selected_preset", "vienna")
             
             # Inizializza agent con configurazione dataset

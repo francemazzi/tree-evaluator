@@ -32,4 +32,3 @@ xmltodict==0.13.0
 
 # Language detection and translation
 langdetect==1.0.9
-
