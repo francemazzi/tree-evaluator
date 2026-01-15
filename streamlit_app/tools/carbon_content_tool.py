@@ -36,6 +36,7 @@ class CarbonContentTool(BaseTool):
     - Carbon content or carbon fraction for a specific species
     - Which species are available in the dataset
     - Carbon percentage or carbon assorbimento (absorption) for a species
+    - "Stock di carbonio" o "carbonio assorbito" inteso come contenuto di carbonio della specie (non CO2)
     
     Input:
     - species: name of the tree species (optional). If not provided, returns list of all available species.
@@ -50,6 +51,7 @@ class CarbonContentTool(BaseTool):
     Example uses:
     - "What is the carbon content for Maple?"
     - "Carbon fraction for Acer platanoides"
+    - "Stock di carbonio per Quercus robur"
     - "List all species with carbon data"
     """
     args_schema: Type[BaseModel] = CarbonContentInput

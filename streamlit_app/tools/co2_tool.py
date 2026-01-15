@@ -104,40 +104,59 @@ class CO2CalculationTool(BaseTool):
         # Add scientific sources for each formula used
         result["formulas"] = {
             "agb": {
-                "formula": "AGB = 0.0673 * (WD * D² * H)^0.976",
+                "formula": "AGB = 0.0673 × (WD × DBH² × H)^0.976",
                 "description": "Chave et al. (2014) generalized equation for above-ground biomass",
                 "source": {
                     "title": "Improved allometric models to estimate the aboveground biomass of tropical trees",
-                    "url": "https://www.researchgate.net/publication/262197290_Improved_allometric_models_to_estimate_the_aboveground_biomass_of_tropical_trees"
+                    "url": "https://doi.org/10.1111/gcb.12629"
                 }
             },
             "bgb": {
-                "formula": "BGB = root_shoot_ratio * AGB",
+                "formula": "BGB = AGB × R/S",
                 "description": "Below-ground biomass from root-to-shoot ratio",
                 "source": {
-                    "title": "Root Biomass and Density for Trees and Forests",
-                    "url": "https://ww2.arb.ca.gov/sites/default/files/cap-and-trade/protocols/usforest/references/cairns1997.pdf"
+                    "title": "Root biomass allocation in the world's upland forests",
+                    "url": "https://doi.org/10.1007/s004420050128"
                 }
             },
             "total_biomass": {
-                "formula": "Total_Biomass = AGB + BGB",
+                "formula": "Biomassa totale = AGB + BGB",
                 "description": "Sum of above-ground and below-ground biomass"
             },
             "carbon": {
-                "formula": "Carbon = Total_Biomass * carbon_fraction",
+                "formula": "C = Biomassa totale × CF",
                 "description": "Carbon content from biomass using species-specific or default carbon fraction",
                 "source": {
                     "title": "Carbon Content of Tree Tissues: A Synthesis",
-                    "url": "https://www.researchgate.net/publication/259443596_Carbon_Content_of_Tree_Tissues_A_Synthesis"
+                    "url": "https://doi.org/10.1007/s10021-017-0198-4"
                 }
             },
             "co2_stock": {
-                "formula": "CO2_Stock = Carbon * (44/12)",
+                "formula": "CO2 = C × (44/12)",
                 "description": "CO2 equivalent from carbon using molecular weight ratio (CO2=44, C=12)"
             },
             "co2_annual": {
-                "formula": "CO2_Annual = Annual_Increment * carbon_fraction * (44/12)",
+                "formula": "CO2 annuale = Incremento annuale × CF × (44/12)",
                 "description": "Annual CO2 sequestration from biomass increment"
+            }
+        }
+        
+        # Add parameters used
+        result["parameters"] = {
+            "wood_density": {
+                "value": wood_density_g_cm3,
+                "unit": "g/cm³",
+                "description": "Densità del legno (WD)"
+            },
+            "carbon_fraction": {
+                "value": carbon_fraction,
+                "unit": "adimensionale",
+                "description": f"Frazione di carbonio (CF) = {carbon_fraction*100:.0f}%"
+            },
+            "root_shoot_ratio": {
+                "value": root_shoot_ratio,
+                "unit": "adimensionale",
+                "description": "Rapporto radici/chioma (R/S)"
             }
         }
         

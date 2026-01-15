@@ -39,6 +39,27 @@ class ToolLoopManager:
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
         
+        # CRITICAL: If calculate_co2_aggregate has been called 2+ times with valid results,
+        # FORCE a response using those results instead of allowing more calls
+        co2_call_count = tool_call_counts.get("calculate_co2_aggregate", 0)
+        if co2_call_count >= 2:
+            # Check if we have valid results to use
+            co2_results = self._extractor.extract_co2_aggregate_results(messages)
+            if co2_results:
+                # Get detected language from state
+                detected_language = state.get("detected_language", "it")
+                if detected_language not in ["it", "en"]:
+                    detected_language = "it"
+                # We have results! Force a response NOW using answer_hint if available
+                response = self._format_co2_aggregate_results(co2_results[0], detected_language)
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {"forced_response": True, "co2_results": True},
+                    "tool_call_counts": tool_call_counts,
+                }
+        
         # CRITICAL: If query_tree_dataset has been called 2+ times with valid results,
         # FORCE a response using those results instead of allowing more calls
         dataset_call_count = tool_call_counts.get("query_tree_dataset", 0)
@@ -399,6 +420,83 @@ Scrivi ORA una risposta all'utente che:
         # Add map data markers for UI
         map_json_str = json.dumps(map_data, ensure_ascii=False, indent=2)
         response += f"\nMAP_DATA_START\n{map_json_str}\nMAP_DATA_END\n"
+        
+        return response
+    
+    def _format_co2_aggregate_results(self, result: dict, language: str = "it") -> str:
+        """Format CO2 aggregate results as user-friendly response with CARBON value prominently.
+        
+        Args:
+            result: CO2 aggregate result dictionary
+            language: Response language
+            
+        Returns:
+            Formatted response string
+        """
+        # If answer_hint is present, use it directly
+        if "answer_hint" in result:
+            return result["answer_hint"]
+        
+        # Otherwise build response manually
+        carbon_stock = result.get("carbon_stock_t", 0)
+        co2_stock = result.get("co2_stock_t", 0)
+        tree_count = result.get("tree_count", 0)
+        total_biomass = result.get("total_biomass_t", 0)
+        agb = result.get("above_ground_biomass_t", 0)
+        bgb = result.get("below_ground_biomass_t", 0)
+        species = result.get("dominant_species", "")
+        
+        # Get parameters
+        params = result.get("parameters", {})
+        cf = params.get("carbon_fraction", {}).get("value", 0.47)
+        rs = params.get("root_shoot_ratio", {}).get("value", 0.24)
+        
+        if language == "en":
+            response = f"""The carbon stock of {species} is **{carbon_stock:,.2f} t C** (tonnes of carbon).
+
+Details:
+- Trees analyzed: {tree_count:,}
+- Carbon stock: {carbon_stock:,.2f} t C
+- CO2 equivalent: {co2_stock:,.2f} t CO2
+- Total biomass: {total_biomass:,.2f} t
+  - Above-ground biomass (AGB): {agb:,.2f} t
+  - Below-ground biomass (BGB): {bgb:,.2f} t
+
+**Formulas used:**
+- AGB = 0.0673 × (WD × DBH² × H)^0.976 (Chave et al., 2014)
+- BGB = AGB × R/S
+- C = Biomass × CF
+- CO2 = C × (44/12)
+
+**Parameters:**
+- Wood density (WD): 0.6 g/cm³
+- Carbon fraction (CF): {cf} ({cf*100:.1f}%)
+- Root-to-shoot ratio (R/S): {rs}
+
+Tools used: calculate_co2_aggregate"""
+        else:
+            response = f"""Lo stock di carbonio di {species} è di **{carbon_stock:,.2f} t C** (tonnellate di carbonio).
+
+Dettagli:
+- Alberi analizzati: {tree_count:,}
+- Stock di carbonio: {carbon_stock:,.2f} t C
+- CO2 equivalente: {co2_stock:,.2f} t CO2
+- Biomassa totale: {total_biomass:,.2f} t
+  - Biomassa epigea (AGB): {agb:,.2f} t
+  - Biomassa ipogea (BGB): {bgb:,.2f} t
+
+**Formule utilizzate:**
+- AGB = 0.0673 × (WD × DBH² × H)^0.976 (Chave et al., 2014)
+- BGB = AGB × R/S
+- C = Biomassa × CF
+- CO2 = C × (44/12)
+
+**Parametri:**
+- Densità legno (WD): 0.6 g/cm³
+- Frazione carbonio (CF): {cf} ({cf*100:.1f}%)
+- Rapporto R/S: {rs}
+
+Tool utilizzati: calculate_co2_aggregate"""
         
         return response
 

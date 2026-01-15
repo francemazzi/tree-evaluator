@@ -361,4 +361,51 @@ class DataExtractor:
                     map_results.append(parsed)
         
         return map_results
+    
+    @staticmethod
+    def extract_co2_aggregate_results(messages: Sequence[BaseMessage]) -> List[dict]:
+        """Extract CO2 aggregate calculation results from ToolMessages.
+        
+        Args:
+            messages: Conversation messages to extract from
+            
+        Returns:
+            List of CO2 aggregate result dictionaries
+        """
+        co2_results = []
+        
+        for msg in reversed(list(messages)):
+            if not isinstance(msg, ToolMessage):
+                continue
+            
+            tool_name = getattr(msg, "name", None)
+            if tool_name != "calculate_co2_aggregate":
+                continue
+            
+            content = msg.content
+            if not content:
+                continue
+            
+            # Try to parse the content
+            parsed = None
+            try:
+                if isinstance(content, dict):
+                    parsed = content
+                elif isinstance(content, str):
+                    try:
+                        parsed = json.loads(content)
+                    except json.JSONDecodeError:
+                        try:
+                            parsed = ast.literal_eval(content)
+                        except (ValueError, SyntaxError):
+                            pass
+            except Exception:
+                pass
+            
+            # Check if we have valid CO2 results
+            if isinstance(parsed, dict) and "carbon_stock_t" in parsed:
+                co2_results.append(parsed)
+                break  # Take only the most recent valid result
+        
+        return co2_results
 

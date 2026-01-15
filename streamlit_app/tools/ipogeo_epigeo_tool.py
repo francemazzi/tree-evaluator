@@ -93,6 +93,9 @@ class IpogeoEpigeoTool(BaseTool):
     forniti nel dataset ipogeo_epigeo.csv. Funziona solo per Hardwood/Latifoglie
     oppure Softwood/Conifere: se il gruppo non appartiene a questi insiemi il calcolo
     non è disponibile.
+    
+    Usa questo tool quando l'utente chiede il quantitativo di biomassa legnosa
+    totale (ipogea + epigea) o rapporti radici/chioma per hardwood/softwood.
     """
     args_schema: Type[BaseModel] = IpogeoEpigeoInput
 
