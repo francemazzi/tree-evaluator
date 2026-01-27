@@ -240,6 +240,29 @@
           "descrizione": "Fattore correttivo empirico."
         }
       ]
+    },
+
+    {
+      "titolo": "Stoccaggio annuale di Carbonio nelle piante (Paoletti et al.)",
+      "funzione": "C_annuo = C_medio × n",
+      "descrizione": "Stima lo stoccaggio annuale di carbonio utilizzando i valori medi di sequestro per specie riportati nel lavoro di Paoletti et al. I valori variano in base alla specie e allo stadio di maturità dell'albero.",
+      "keywords": ["carbonio", "carbon", "sequestro", "sequestration", "stoccaggio", "storage", "CO2", "Paoletti", "annuale", "annual"],
+      "variabili": [
+        {
+          "nome": "C_medio",
+          "descrizione": "Tasso medio di sequestro di carbonio (kg C/anno). Valori di riferimento per specie: Acer platanoides: 3.2, Acer rubrum: 2.8, Acer saccharum: 2.9, Celtis occidentalis: 2.7, Fraxinus pennsylvanica: 3.6, Gymnocladus dioica: 2.1, Juglans nigra: 3.0, Picea glauca: 3.3, Picea pungens: 6.7, Pinus lambertiana: 4.2, Populus deltoides (ibridi): 14.9, Tilia spp.: 5.3. Media generale: 4.6 kg C/anno."
+        },
+        {
+          "nome": "C_maturita",
+          "descrizione": "Tasso di sequestro di carbonio a maturità (kg C/anno). Valori di riferimento per specie: Acer platanoides: 9.9, Acer rubrum: 8.9, Acer saccharum: 7.8, Celtis occidentalis: 8.5, Fraxinus pennsylvanica: 10.8, Gymnocladus dioica: 3.6, Juglans nigra: 8.0, Picea glauca: 7.7, Picea pungens: 12.8, Pinus lambertiana: 15.2, Populus deltoides (ibridi): 29.6, Tilia spp.: 13.8. Media generale: 11.4 kg C/anno."
+        },
+        {
+          "nome": "n",
+          "descrizione": "Numero di alberi della stessa specie per cui si vuole calcolare lo stoccaggio totale."
+        }
+      ],
+      "fonte": "Paoletti et al.",
+      "note": "Per specie non presenti nell'elenco, utilizzare i valori medi generali (4.6 kg C/anno per alberi giovani/medi, 11.4 kg C/anno per alberi maturi). Per convertire in CO2 equivalente, moltiplicare il valore di C per 3.67 (rapporto peso molecolare CO2/C)."
     }
   ]
   

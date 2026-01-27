@@ -28,6 +28,7 @@ from streamlit_app.agent.tool_guard import ToolLoopManager
 from streamlit_app.llm.factory import LlmFactory, LlmProvider, LlmSettings, LlmSettingsReader
 from streamlit_app.tools.allometric_relation_tool import AllometricRelationTool
 from streamlit_app.tools.carbon_content_tool import CarbonContentTool
+from streamlit_app.tools.carbon_sequestration_tool import CarbonSequestrationTool
 from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_aggregate_tool import CO2AggregateTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
@@ -208,6 +209,7 @@ class TreeEvaluatorAgent:
             CO2CalculationTool(),
             co2_aggregate_tool,
             CarbonContentTool(),
+            CarbonSequestrationTool(),
             EnvironmentEstimationTool(),
             dataset_tool,
             species_list_tool,
