@@ -58,22 +58,43 @@ class StreamingHandler:
     @staticmethod
     def handle_query_optimizer_event(node_output: Dict[str, Any], language: Language = "it") -> Dict[str, str]:
         """Handle query optimizer node events.
-        
+
         Args:
             node_output: Output from query_optimizer node
             language: Language for messages ("it" or "en")
         """
         optimized = node_output.get("optimized_query", "")
         tasks = node_output.get("tasks", [])
-        
+        tool_plan = node_output.get("tool_plan", [])
+
         if optimized:
             reasoning = f"{get_translation('query_optimization', language)}\n\n"
             reasoning += f"{get_translation('optimized_query_label', language)}: *{optimized}*\n\n"
-            if tasks:
+
+            # Show tasks with tool plan
+            if tasks and tool_plan:
+                plan_title = "Piano di esecuzione:" if language == "it" else "Execution Plan:"
+                reasoning += f"**{plan_title}**\n\n"
+
+                for i, task in enumerate(tasks):
+                    plan_item = tool_plan[i] if i < len(tool_plan) else {}
+                    tools = plan_item.get("tools", [])
+                    reason = plan_item.get("reason", "")
+
+                    reasoning += f"**{i+1}. {task}**\n"
+                    if tools:
+                        tools_label = "Tool" if language == "it" else "Tools"
+                        reasoning += f"   - {tools_label}: `{', '.join(tools)}`\n"
+                    if reason:
+                        reason_label = "Motivo" if language == "it" else "Reason"
+                        reasoning += f"   - {reason_label}: {reason}\n"
+                    reasoning += "\n"
+            elif tasks:
                 reasoning += f"{get_translation('tasks_identified', language)}\n\n<ol>\n"
                 for task in tasks:
                     reasoning += f"<li>{task}</li>\n"
                 reasoning += "</ol>\n\n"
+
             return {"type": "reasoning", "content": reasoning}
         return None
     
@@ -242,11 +263,36 @@ class StreamingHandler:
             column_name = result_data.get("column")
             output += f"**{column_name}**: {result_val}\n"
         
-        # CO2 results
+        # CO2 results (single tree - calculate_co2)
         if "co2_sequestration_kg" in result_data:
             co2 = result_data.get("co2_sequestration_kg", 0)
             output += f"🌱 {get_translation('co2_sequestered', language)}: {co2} kg\n"
-        
+
+        # CO2 aggregate results (calculate_co2_aggregate)
+        if "carbon_stock_t" in result_data or "co2_stock_t" in result_data:
+            tree_count = result_data.get("tree_count", 0)
+            carbon_stock = result_data.get("carbon_stock_t", 0)
+            co2_stock = result_data.get("co2_stock_t", 0)
+            total_biomass = result_data.get("total_biomass_t", 0)
+            species = result_data.get("dominant_species", "")
+
+            if language == "en":
+                output += f"\n🌳 **CO2 Aggregate Calculation**\n"
+                output += f"- Trees analyzed: **{tree_count:,}**\n"
+                if species:
+                    output += f"- Dominant species: {species}\n"
+                output += f"- Carbon stock: **{carbon_stock:,.2f} t C**\n"
+                output += f"- CO2 equivalent: **{co2_stock:,.2f} t CO2**\n"
+                output += f"- Total biomass: {total_biomass:,.2f} t\n"
+            else:
+                output += f"\n🌳 **Calcolo CO2 Aggregato**\n"
+                output += f"- Alberi analizzati: **{tree_count:,}**\n"
+                if species:
+                    output += f"- Specie dominante: {species}\n"
+                output += f"- Stock di carbonio: **{carbon_stock:,.2f} t C**\n"
+                output += f"- CO2 equivalente: **{co2_stock:,.2f} t CO2**\n"
+                output += f"- Biomassa totale: {total_biomass:,.2f} t\n"
+
         return output
     
     @staticmethod

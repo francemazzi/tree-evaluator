@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 
@@ -11,15 +11,121 @@ from streamlit_app.agent.extraction import DataExtractor
 from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 
 
+class SemanticToolLoopDetector:
+    """Detects tool loops using semantic similarity instead of just counting.
+
+    This detector compares tool arguments to determine if calls are truly
+    repetitive (high similarity = loop) vs legitimate follow-up calls
+    (low similarity = different queries).
+    """
+
+    SIMILARITY_THRESHOLD = 0.85  # Above this = considered same call
+
+    def __init__(self):
+        self.call_history: List[Dict[str, Any]] = []
+
+    def record_call(self, tool_name: str, args: Dict[str, Any]) -> None:
+        """Record a tool call for similarity tracking."""
+        self.call_history.append({
+            "tool_name": tool_name,
+            "args": args,
+        })
+
+    def is_semantic_loop(self, tool_name: str, args: Dict[str, Any]) -> bool:
+        """Check if this call is semantically similar to recent calls.
+
+        Args:
+            tool_name: Name of the tool being called.
+            args: Arguments for the tool call.
+
+        Returns:
+            True if this appears to be a repetitive loop call.
+        """
+        # Get recent calls to the same tool
+        recent_same_tool = [
+            c for c in self.call_history[-5:]
+            if c["tool_name"] == tool_name
+        ]
+
+        if len(recent_same_tool) < 2:
+            return False
+
+        # Check similarity with last 3 calls
+        for prev_call in recent_same_tool[-3:]:
+            similarity = self._compute_arg_similarity(prev_call["args"], args)
+            if similarity >= self.SIMILARITY_THRESHOLD:
+                return True
+
+        return False
+
+    def _compute_arg_similarity(self, args1: Dict[str, Any], args2: Dict[str, Any]) -> float:
+        """Compute similarity between two argument dictionaries.
+
+        Args:
+            args1: First argument dict.
+            args2: Second argument dict.
+
+        Returns:
+            Similarity score between 0.0 and 1.0.
+        """
+        if args1 == args2:
+            return 1.0
+
+        if not args1 or not args2:
+            return 0.0
+
+        # Compare common keys
+        all_keys = set(args1.keys()) | set(args2.keys())
+        if not all_keys:
+            return 0.0
+
+        matches = 0
+        for key in all_keys:
+            val1 = args1.get(key)
+            val2 = args2.get(key)
+
+            if val1 == val2:
+                matches += 1
+            elif isinstance(val1, str) and isinstance(val2, str):
+                # Partial string match for query-like arguments
+                if self._string_similarity(val1, val2) > 0.8:
+                    matches += 0.5
+
+        return matches / len(all_keys)
+
+    def _string_similarity(self, s1: str, s2: str) -> float:
+        """Compute simple string similarity using word overlap."""
+        words1 = set(s1.lower().split())
+        words2 = set(s2.lower().split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        intersection = words1 & words2
+        union = words1 | words2
+
+        return len(intersection) / len(union) if union else 0.0
+
+    def get_loop_info(self, tool_name: str) -> Dict[str, Any]:
+        """Get information about potential loops for a tool."""
+        tool_calls = [c for c in self.call_history if c["tool_name"] == tool_name]
+        return {
+            "tool_name": tool_name,
+            "total_calls": len(tool_calls),
+            "recent_calls": len([c for c in self.call_history[-10:] if c["tool_name"] == tool_name]),
+        }
+
+
 class ToolLoopManager:
     """Manager for detecting and recovering from tool call loops."""
-    
+
     MAX_CALLS_PER_TOOL = 5  # If same tool called 5+ times, force replan
-    
+
     def __init__(self):
         """Initialize tool loop manager."""
         self._extractor = DataExtractor()
         self._loop_guard = ToolLoopGuard(max_consecutive_repeats=2)
+        self._semantic_detector = SemanticToolLoopDetector()
     
     def check_for_loops(self, messages: Sequence[BaseMessage], state: dict) -> dict:
         """Check for tool call loops and decide on action.
@@ -38,11 +144,63 @@ class ToolLoopManager:
                 tool_name = getattr(msg, "name", None)
                 if tool_name:
                     tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
-        
-        # CRITICAL: If calculate_co2_aggregate has been called 2+ times with valid results,
+
+        # Extract pending tool calls from last AI message for semantic analysis
+        pending_tool_calls = []
+        for msg in reversed(list(messages)):
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                pending_tool_calls = msg.tool_calls
+                break
+
+        # Check for semantic loops using argument similarity
+        for tc in pending_tool_calls:
+            tool_name = tc.get("name", "unknown")
+            args = tc.get("args", {})
+
+            # Record call for future similarity checks
+            self._semantic_detector.record_call(tool_name, args)
+
+            # Check if this is a semantic loop (same tool with similar args)
+            if self._semantic_detector.is_semantic_loop(tool_name, args):
+                loop_info = self._semantic_detector.get_loop_info(tool_name)
+                detected_language = state.get("detected_language", "it")
+                if detected_language not in ["it", "en"]:
+                    detected_language = "it"
+
+                # Try to get any existing results before forcing stop
+                dataset_results = self._extractor.extract_dataset_results(messages)
+                if dataset_results:
+                    response = self._format_dataset_results(dataset_results, messages, detected_language)
+                else:
+                    if detected_language == "en":
+                        response = (
+                            f"I've already called `{tool_name}` multiple times with similar parameters. "
+                            "Let me summarize what I found so far and provide you with a response."
+                        )
+                    else:
+                        response = (
+                            f"Ho già chiamato `{tool_name}` più volte con parametri simili. "
+                            "Lasciatemi riassumere quello che ho trovato finora e fornirvi una risposta."
+                        )
+
+                return {
+                    "messages": [AIMessage(content=response)],
+                    "tool_loop_detected": True,
+                    "tool_loop_action": "stop",
+                    "tool_loop_details": {
+                        "semantic_loop": True,
+                        "tool_name": tool_name,
+                        **loop_info,
+                    },
+                    "tool_call_counts": tool_call_counts,
+                }
+
+        # CRITICAL: If calculate_co2_aggregate has been called 4+ times with valid results,
         # FORCE a response using those results instead of allowing more calls
+        # NOTE: Threshold increased from 2 to 4 to allow legitimate comparative queries
+        # (e.g., "CO2 for tree A" then "CO2 for tree B")
         co2_call_count = tool_call_counts.get("calculate_co2_aggregate", 0)
-        if co2_call_count >= 2:
+        if co2_call_count >= 4:
             # Check if we have valid results to use
             co2_results = self._extractor.extract_co2_aggregate_results(messages)
             if co2_results:
@@ -60,10 +218,11 @@ class ToolLoopManager:
                     "tool_call_counts": tool_call_counts,
                 }
         
-        # CRITICAL: If query_tree_dataset has been called 2+ times with valid results,
+        # CRITICAL: If query_tree_dataset has been called 4+ times with valid results,
         # FORCE a response using those results instead of allowing more calls
+        # NOTE: Threshold increased from 2 to 4 to allow legitimate follow-up queries
         dataset_call_count = tool_call_counts.get("query_tree_dataset", 0)
-        if dataset_call_count >= 2:
+        if dataset_call_count >= 4:
             # Check if we have valid results to use
             dataset_results = self._extractor.extract_dataset_results(messages)
             if dataset_results:
@@ -81,10 +240,11 @@ class ToolLoopManager:
                     "tool_call_counts": tool_call_counts,
                 }
         
-        # CRITICAL: If generate_chart has been called 2+ times with successful result,
+        # CRITICAL: If generate_chart has been called 3+ times with successful result,
         # FORCE a response with the chart instead of allowing more calls
+        # NOTE: Threshold increased from 2 to 3 to allow chart refinements
         chart_call_count = tool_call_counts.get("generate_chart", 0)
-        if chart_call_count >= 2:
+        if chart_call_count >= 3:
             # Check if we have a successful chart
             chart_results = self._extractor.extract_chart_results(messages)
             if chart_results:
@@ -98,10 +258,11 @@ class ToolLoopManager:
                     "tool_call_counts": tool_call_counts,
                 }
         
-        # CRITICAL: If generate_map has been called 2+ times with successful result,
+        # CRITICAL: If generate_map has been called 3+ times with successful result,
         # FORCE a response with the map instead of allowing more calls
+        # NOTE: Threshold increased from 2 to 3 to allow map refinements
         map_call_count = tool_call_counts.get("generate_map", 0)
-        if map_call_count >= 2:
+        if map_call_count >= 3:
             # Check if we have a successful map
             map_results = self._extractor.extract_map_results(messages)
             if map_results:

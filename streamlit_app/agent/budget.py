@@ -143,12 +143,13 @@ class BudgetAwareToolGuard:
     def __init__(self, budget: AgentBudget):
         self._budget = budget
     
-    def check_before_tools(self, messages: Sequence[BaseMessage]) -> Tuple[bool, str, Dict[str, Any]]:
+    def check_before_tools(self, messages: Sequence[BaseMessage], language: str = "it") -> Tuple[bool, str, Dict[str, Any]]:
         """Check budget before tool execution.
-        
+
         Args:
             messages: Current conversation messages.
-            
+            language: Response language ("it" or "en").
+
         Returns:
             Tuple of (can_proceed, error_message, budget_status).
         """
@@ -158,22 +159,22 @@ class BudgetAwareToolGuard:
             if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
                 last_ai = msg
                 break
-        
+
         if not last_ai or not last_ai.tool_calls:
             return True, "", self._budget.get_status()
-        
+
         # Check each tool call against budget
         for tc in last_ai.tool_calls:
             tool_name = tc.get("name", "unknown")
             can_call, reason = self._budget.can_call_tool(tool_name)
-            
+
             if not can_call:
-                error_msg = self._build_budget_error_response(reason, tool_name)
+                error_msg = self._build_budget_error_response(reason, tool_name, language)
                 return False, error_msg, self._budget.get_status()
-            
+
             # Record the call (pre-emptively)
             self._budget.record_tool_call(tool_name)
-        
+
         return True, "", self._budget.get_status()
     
     def check_before_llm(self) -> Tuple[bool, str]:
@@ -183,12 +184,40 @@ class BudgetAwareToolGuard:
             self._budget.record_llm_call()
         return can_call, reason
     
-    def _build_budget_error_response(self, reason: str, tool_name: str) -> str:
-        """Build user-friendly error message when budget is exceeded."""
+    def _build_budget_error_response(self, reason: str, tool_name: str, language: str = "it") -> str:
+        """Build user-friendly error message when budget is exceeded.
+
+        Args:
+            reason: The specific budget limit that was exceeded.
+            tool_name: Name of the tool that triggered the limit.
+            language: Response language ("it" or "en").
+
+        Returns:
+            Formatted error message in the specified language.
+        """
         status = self._budget.get_status()
-        tools_used = ', '.join(status['per_tool_calls'].keys()) or 'Nessuno'
-        
-        return f"""⚠️ **Limite di esecuzione raggiunto**
+
+        if language == "en":
+            tools_used = ', '.join(status['per_tool_calls'].keys()) or 'None'
+            return f"""⚠️ **Execution limit reached**
+
+{reason}
+
+**Current status:**
+- Total tool calls: {status['total_tool_calls']}
+- LLM calls: {status['llm_calls']}
+- Elapsed time: {status['elapsed_time']}
+- Most used tool: {tool_name}
+
+**Suggestions:**
+- Rephrase the question more specifically
+- Break down the request into simpler questions
+- Ask directly for the result without complex processing
+
+Tools used: {tools_used}"""
+        else:
+            tools_used = ', '.join(status['per_tool_calls'].keys()) or 'Nessuno'
+            return f"""⚠️ **Limite di esecuzione raggiunto**
 
 {reason}
 

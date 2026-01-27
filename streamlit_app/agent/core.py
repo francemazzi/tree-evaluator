@@ -11,12 +11,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from streamlit_app.agent.budget import AgentBudget, BudgetAwareToolGuard
+from streamlit_app.agent.config_loader import get_config_loader
 from streamlit_app.agent.context_manager import ConversationContextManager
 from streamlit_app.agent.extraction import DataExtractor
 from streamlit_app.agent.formatting import ItalianNumberFormatter
@@ -33,6 +34,7 @@ from streamlit_app.tools.co2_aggregate_tool import CO2AggregateTool
 from streamlit_app.tools.co2_tool import CO2CalculationTool
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 from streamlit_app.tools.environment_tool import EnvironmentEstimationTool
+from streamlit_app.tools.export_tool import ExportDataTool
 from streamlit_app.tools.general_volume_tool import GeneralVolumeTool
 from streamlit_app.tools.heyer_volume_tool import HeyerVolumeTool
 from streamlit_app.tools.language_tool import LanguageDetectionTool, LanguageTranslationTool
@@ -47,6 +49,7 @@ from streamlit_app.tools.simplified_volume_tool import SimplifiedVolumeTool
 from streamlit_app.tools.species_list_tool import SpeciesListQueryTool
 from streamlit_app.tools.stem_biomass_tool import StemBiomassTool
 from streamlit_app.tools.total_biomass_tool import TotalBiomassTool
+from streamlit_app.tools.dynamic_tool_loader import DynamicToolLoader, get_tools_for_planning
 
 # Load environment variables
 load_dotenv()
@@ -125,6 +128,9 @@ class TreeEvaluatorAgent:
         self._extractor = DataExtractor()
         self._formatter = ItalianNumberFormatter()
         self._tool_loop_manager = ToolLoopManager()
+
+        # Cache for tool summary (optimization: avoid rebuilding every request)
+        self._cached_tools_summary: Optional[str] = None
 
         # Build graph
         self._graph = self._build_graph()
@@ -208,7 +214,8 @@ class TreeEvaluatorAgent:
         else:
             map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
 
-        return [
+        # Static tools list
+        static_tools = [
             CO2CalculationTool(),
             co2_aggregate_tool,
             CarbonContentTool(),
@@ -229,9 +236,23 @@ class TreeEvaluatorAgent:
             RootBiomassTool(),
             TotalBiomassTool(),
             PaperSearchTool(),
+            ExportDataTool(language=interface_language),
             LanguageDetectionTool(llm=self._base_llm),
             LanguageTranslationTool(llm=self._base_llm),
         ]
+
+        # Load dynamic tools from JSON
+        try:
+            dynamic_loader = DynamicToolLoader()
+            dynamic_tools = dynamic_loader.create_tools()
+            # Store tools summary for planning
+            self._dynamic_tools_summary = dynamic_loader.get_tools_summary()
+        except Exception:
+            dynamic_tools = []
+            self._dynamic_tools_summary = []
+
+        # Combine static and dynamic tools
+        return static_tools + dynamic_tools
 
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph workflow with all nodes and edges."""
@@ -293,7 +314,7 @@ class TreeEvaluatorAgent:
         return self._context_manager.manage_context(messages)
 
     def _optimize_query(self, state: AgentState) -> dict:
-        """Optimize user query and break it into tasks."""
+        """Optimize user query, break it into tasks, and plan which tools to use."""
         messages = state["messages"]
 
         # Get the last user message
@@ -304,57 +325,86 @@ class TreeEvaluatorAgent:
                 break
 
         if not last_user_msg:
-            return {"optimized_query": None, "tasks": [], "detected_language": self._interface_language}
+            return {"optimized_query": None, "tasks": [], "tool_plan": [], "detected_language": self._interface_language}
 
         # Use the configured interface language from user settings
         detected_language = self._interface_language
 
-        # For simple/short queries, skip optimization
-        if len(last_user_msg) < 50:
-            return {"optimized_query": last_user_msg, "tasks": [last_user_msg], "detected_language": detected_language}
+        # Build available tools summary for planning
+        tools_summary = self._build_tools_summary_for_planning()
 
-        # Use LLM to optimize query
+        # For simple/short queries, skip LLM optimization and do basic planning
+        # This saves 1 LLM call per simple request (~30% overhead reduction)
+        if len(last_user_msg) < 100 or self._is_simple_query(last_user_msg):
+            simple_plan = self._create_simple_tool_plan(last_user_msg, detected_language)
+            return {
+                "optimized_query": last_user_msg,
+                "tasks": [last_user_msg],
+                "tool_plan": simple_plan,
+                "available_tools_summary": tools_summary,
+                "detected_language": detected_language
+            }
+
+        # Use LLM to optimize query and plan tools
         if detected_language == "en":
-            optimizer_prompt = f"""Analyze the following question and create 2-3 simple tasks.
+            optimizer_prompt = f"""Analyze the following question and create a task list with tool selection.
 
 Question: {last_user_msg}
+
+AVAILABLE TOOLS:
+{tools_summary}
 
 Respond ONLY in JSON format:
 {{
     "optimized_query": "briefly rephrased question",
-    "tasks": ["task 1", "task 2"]
+    "tasks": ["task 1", "task 2"],
+    "tool_plan": [
+        {{"task": "task 1", "tools": ["tool_name_1"], "reason": "why this tool"}},
+        {{"task": "task 2", "tools": ["tool_name_2", "tool_name_3"], "reason": "why these tools"}}
+    ]
 }}
 
 RULES:
 - Maximum 3 tasks
 - Short and direct tasks
+- For each task, select 1-3 most appropriate tools from the available list
+- Provide a brief reason for tool selection
 - If the question is already clear, return the original question with 1 task"""
             optimization_msg_template = """Optimized query: {optimized_query}
 
-Tasks to complete:
-{tasks}"""
+Execution Plan:
+{plan_text}"""
         else:
-            optimizer_prompt = f"""Analizza la seguente domanda e crea 2-3 task semplici.
+            optimizer_prompt = f"""Analizza la seguente domanda e crea una lista di task con selezione dei tool.
 
 Domanda: {last_user_msg}
+
+TOOL DISPONIBILI:
+{tools_summary}
 
 Rispondi SOLO in formato JSON:
 {{
     "optimized_query": "domanda riformulata brevemente",
-    "tasks": ["task 1", "task 2"]
+    "tasks": ["task 1", "task 2"],
+    "tool_plan": [
+        {{"task": "task 1", "tools": ["nome_tool_1"], "reason": "perché questo tool"}},
+        {{"task": "task 2", "tools": ["nome_tool_2", "nome_tool_3"], "reason": "perché questi tool"}}
+    ]
 }}
 
 REGOLE:
 - Massimo 3 task
 - Task brevi e diretti
+- Per ogni task, seleziona 1-3 tool più appropriati dalla lista disponibile
+- Fornisci una breve motivazione per la selezione del tool
 - Se la domanda è già chiara, restituisci la domanda originale con 1 task"""
             optimization_msg_template = """Query ottimizzata: {optimized_query}
 
-Task da completare:
-{tasks}"""
+Piano di esecuzione:
+{plan_text}"""
 
         try:
-            optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=1)
+            optimizer_llm = self._create_chat_without_tools(model=self._fallback_model, temperature=0.7)
             response = optimizer_llm.invoke([HumanMessage(content=optimizer_prompt)])
             response_text = response.content.strip()
 
@@ -367,20 +417,156 @@ Task da completare:
             optimization_result = json.loads(response_text)
             optimized_query = optimization_result.get("optimized_query", last_user_msg)
             tasks = optimization_result.get("tasks", [])
+            tool_plan = optimization_result.get("tool_plan", [])
 
-            tasks_text = chr(10).join(f'{i+1}. {task}' for i, task in enumerate(tasks))
+            # Format plan for display
+            plan_text = self._format_tool_plan(tasks, tool_plan, detected_language)
             optimization_msg = SystemMessage(
-                content=optimization_msg_template.format(optimized_query=optimized_query, tasks=tasks_text)
+                content=optimization_msg_template.format(optimized_query=optimized_query, plan_text=plan_text)
             )
 
-            return {"messages": [optimization_msg], "optimized_query": optimized_query, "tasks": tasks, "detected_language": detected_language}
+            return {
+                "messages": [optimization_msg],
+                "optimized_query": optimized_query,
+                "tasks": tasks,
+                "tool_plan": tool_plan,
+                "available_tools_summary": tools_summary,
+                "detected_language": detected_language
+            }
 
-        except Exception:
-            return {"optimized_query": last_user_msg, "tasks": [last_user_msg], "detected_language": detected_language}
+        except Exception as e:
+            # Log the error instead of failing silently (visibility for debugging)
+            import logging
+            logging.warning(f"Query optimizer failed: {e}, falling back to simple plan")
+            simple_plan = self._create_simple_tool_plan(last_user_msg, detected_language)
+            return {
+                "optimized_query": last_user_msg,
+                "tasks": [last_user_msg],
+                "tool_plan": simple_plan,
+                "available_tools_summary": tools_summary,
+                "detected_language": detected_language
+            }
+
+    def _is_simple_query(self, query: str) -> bool:
+        """Detect simple queries that don't require LLM optimization.
+
+        Simple queries are direct requests like "quanti alberi?" that can be
+        handled with keyword-based tool selection, saving an LLM call.
+
+        Uses patterns loaded dynamically from presets.json.
+
+        Args:
+            query: The user's query string
+
+        Returns:
+            True if the query is simple and can skip LLM optimization
+        """
+        query_lower = query.lower()
+        config = get_config_loader()
+
+        # Load patterns dynamically from config for both languages
+        patterns_it = config.get_simple_query_patterns("it")
+        patterns_en = config.get_simple_query_patterns("en")
+        all_patterns = patterns_it + patterns_en
+
+        # Also check if query matches any tool keywords (indicates direct tool request)
+        matching_tools = config.match_keywords_to_tools(query)
+
+        return any(pattern in query_lower for pattern in all_patterns) or len(matching_tools) > 0
+
+    def _build_tools_summary_for_planning(self) -> str:
+        """Build a summary of all available tools for task planning.
+
+        Uses caching to avoid rebuilding the summary on every request (~2000+ chars saved).
+        Loads tool descriptions dynamically from presets.json.
+        """
+        # Return cached summary if available (optimization)
+        if self._cached_tools_summary:
+            return self._cached_tools_summary
+
+        config = get_config_loader()
+        language = self._interface_language
+
+        summary_lines = []
+
+        # Static tools summary - loaded dynamically from config
+        static_tools = config.get_static_tools_metadata(language)
+        for tool in static_tools:
+            summary_lines.append(f"- {tool['name']}: {tool['description']}")
+
+        # Dynamic tools summary (from tools.json)
+        if hasattr(self, '_dynamic_tools_summary') and self._dynamic_tools_summary:
+            summary_lines.append("\nDynamic Formula Tools:")
+            for tool_info in self._dynamic_tools_summary:
+                summary_lines.append(f"- {tool_info['name']}: {tool_info['title']} ({tool_info['formula']})")
+
+        # Cache the result
+        self._cached_tools_summary = "\n".join(summary_lines)
+        return self._cached_tools_summary
+
+    def _create_simple_tool_plan(self, query: str, language: str) -> List[Dict]:
+        """Create a simple tool plan for short queries.
+
+        Uses dynamic keyword matching from presets.json instead of hardcoded mappings.
+        """
+        config = get_config_loader()
+
+        # Match keywords to tools dynamically
+        tools = config.match_keywords_to_tools(query)
+
+        # Also check dynamic tools keywords
+        if hasattr(self, '_dynamic_tools_summary') and self._dynamic_tools_summary:
+            query_lower = query.lower()
+            for tool_info in self._dynamic_tools_summary:
+                keywords = tool_info.get("keywords", [])
+                for kw in keywords:
+                    if kw.lower() in query_lower and tool_info["name"] not in tools:
+                        tools.append(tool_info["name"])
+                        break
+
+        # Default to dataset query if no specific match
+        if not tools:
+            tools.append("query_dataset")
+
+        reason_it = "Tool suggerito in base alla domanda"
+        reason_en = "Suggested tool based on the query"
+
+        return [{
+            "task": query,
+            "tools": tools,
+            "reason": reason_en if language == "en" else reason_it
+        }]
+
+    def _format_tool_plan(self, tasks: List[str], tool_plan: List[Dict], language: str) -> str:
+        """Format the tool plan for display."""
+        lines = []
+
+        for i, task in enumerate(tasks):
+            plan_item = tool_plan[i] if i < len(tool_plan) else {}
+            tools = plan_item.get("tools", [])
+            reason = plan_item.get("reason", "")
+
+            if language == "en":
+                lines.append(f"{i+1}. Task: {task}")
+                lines.append(f"   Tools: {', '.join(tools) if tools else 'auto-select'}")
+                if reason:
+                    lines.append(f"   Reason: {reason}")
+            else:
+                lines.append(f"{i+1}. Task: {task}")
+                lines.append(f"   Tool: {', '.join(tools) if tools else 'selezione automatica'}")
+                if reason:
+                    lines.append(f"   Motivo: {reason}")
+
+        return "\n".join(lines)
 
     def _check_budget(self, state: AgentState) -> dict:
         """Check budget constraints before tool execution."""
         messages = state.get("messages") or []
+
+        # Get detected language early for use in error messages
+        detected_language = state.get("detected_language", "it")
+        if detected_language not in ["it", "en"]:
+            detected_language = "it"
 
         # Restore or create budget
         budget_data = state.get("budget")
@@ -389,15 +575,12 @@ Task da completare:
         else:
             budget = AgentBudget()
 
-        # Create guard and check
+        # Create guard and check (pass language for proper error messages)
         guard = BudgetAwareToolGuard(budget)
-        can_proceed, error_msg, status = guard.check_before_tools(messages)
+        can_proceed, error_msg, status = guard.check_before_tools(messages, detected_language)
 
         if not can_proceed:
             # Budget exceeded - generate conversational response
-            detected_language = state.get("detected_language", "it")
-            if detected_language not in ["it", "en"]:
-                detected_language = "it"
             conversational_response = self._generate_conversational_summary(messages, status, detected_language)
             return {
                 "messages": [AIMessage(content=conversational_response)],
@@ -568,12 +751,20 @@ Risposta:"""
             if isinstance(msg, HumanMessage):
                 return HumanMessage(content=content)
             if isinstance(msg, AIMessage):
-                return AIMessage(content=content)
+                # Preserve tool_calls when truncating AIMessage
+                return AIMessage(content=content, tool_calls=getattr(msg, 'tool_calls', None) or [])
             if isinstance(msg, SystemMessage):
                 return SystemMessage(content=content)
+            if isinstance(msg, ToolMessage):
+                # ToolMessage requires tool_call_id and name
+                return ToolMessage(
+                    content=content,
+                    tool_call_id=getattr(msg, 'tool_call_id', ''),
+                    name=getattr(msg, 'name', '')
+                )
             return msg
 
-        # Build minimal message list
+        # Build minimal message list - MUST include ToolMessages for agent to see results
         system_messages = [m for m in messages if isinstance(m, SystemMessage)]
         last_user_msg = None
         for msg in reversed(messages):
@@ -581,38 +772,66 @@ Risposta:"""
                 last_user_msg = msg
                 break
 
-        last_assistant = None
-        if last_user_msg:
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage):
-                    last_assistant = msg
-                    break
+        # Find the last AIMessage with tool_calls and its corresponding ToolMessages
+        last_ai_with_tools = None
+        tool_messages_after_ai = []
+
+        for i, msg in enumerate(messages):
+            if isinstance(msg, AIMessage) and getattr(msg, 'tool_calls', None):
+                last_ai_with_tools = msg
+                # Collect all ToolMessages that follow this AIMessage
+                tool_messages_after_ai = []
+                for j in range(i + 1, len(messages)):
+                    if isinstance(messages[j], ToolMessage):
+                        tool_messages_after_ai.append(messages[j])
+                    elif isinstance(messages[j], AIMessage):
+                        # Stop when we hit another AIMessage
+                        break
 
         minimal_messages = []
         minimal_messages.extend(system_messages[:1])
-        if last_assistant:
-            minimal_messages.append(last_assistant)
         if last_user_msg:
             minimal_messages.append(last_user_msg)
 
-        minimal_messages = [_truncate(m, max_len=400) for m in minimal_messages]
+        # Include AIMessage with tool_calls AND its ToolMessages so agent can see results
+        if last_ai_with_tools:
+            minimal_messages.append(last_ai_with_tools)
+            for tm in tool_messages_after_ai:
+                minimal_messages.append(tm)
+
+        # Truncate only non-ToolMessages (ToolMessages contain important results)
+        def _truncate_if_needed(msg: BaseMessage) -> BaseMessage:
+            if isinstance(msg, ToolMessage):
+                # Truncate ToolMessages more conservatively to preserve results
+                return _truncate(msg, max_len=1500)
+            return _truncate(msg, max_len=400)
+
+        minimal_messages = [_truncate_if_needed(m) for m in minimal_messages]
 
         try:
             response = self._llm.invoke(minimal_messages)
         except Exception as e:
             # Fallback to lighter model on error
+            # NOTE: We intentionally DO NOT modify tool._llm to avoid state mutation
+            # which can cause unpredictable behavior in subsequent requests
             if "rate_limit" in str(e).lower() or "429" in str(e) or "request too large" in str(e).lower():
+                import logging
+                logging.warning(f"Rate limit hit, switching to fallback model: {e}")
                 try:
-                    for tool in self._tools:
-                        if hasattr(tool, "_llm"):
-                            object.__setattr__(tool, "_llm", self._fallback_llm)
-                    self._llm = self._fallback_llm.bind_tools(self._tools)
+                    # Create a temporary LLM binding with fallback model
+                    # Tools maintain their original LLM reference - only agent uses fallback
+                    fallback_llm_with_tools = self._fallback_llm.bind_tools(self._tools)
                     minimal_fallback = []
                     minimal_fallback.extend(system_messages[:1])
                     if last_user_msg:
                         minimal_fallback.append(last_user_msg)
+                    # Include ToolMessages in fallback too
+                    if last_ai_with_tools:
+                        minimal_fallback.append(last_ai_with_tools)
+                        for tm in tool_messages_after_ai:
+                            minimal_fallback.append(tm)
                     minimal_fallback = [_truncate(m, max_len=300) for m in minimal_fallback]
-                    response = self._llm.invoke(minimal_fallback)
+                    response = fallback_llm_with_tools.invoke(minimal_fallback)
                 except Exception:
                     raise
             else:
@@ -730,6 +949,8 @@ Risposta:"""
                 "budget_exceeded": False,
                 "budget_status": None,
                 "detected_language": self._interface_language,
+                "tool_plan": None,
+                "available_tools_summary": None,
             },
             config={"recursion_limit": 30},
         )
@@ -791,6 +1012,8 @@ Risposta:"""
                 "budget_exceeded": False,
                 "budget_status": None,
                 "detected_language": self._interface_language,
+                "tool_plan": None,
+                "available_tools_summary": None,
             },
             config={"recursion_limit": 30},
             stream_mode="updates",

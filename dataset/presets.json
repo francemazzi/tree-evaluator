@@ -1,0 +1,135 @@
+{
+  "vienna": {
+    "db_path": "dataset/BAUMKATOGD.db",
+    "table_name": "baumkatogd",
+    "description": {
+      "it": "Dataset degli alberi di Vienna (BAUMKATOGD) con 229.298 alberi.\nColonne principali:\n- objectid: ID univoco albero\n- district: Numero distretto (1-23)\n- genus_species: Nome specie (es. \"Acer platanoides\")\n- plant_year: Anno di piantumazione\n- trunk_circumference: Circonferenza tronco in cm\n- tree_height: Categoria altezza (codificata)\n- crown_diameter: Categoria diametro chioma (codificata)\n- object_street: Nome via\nCalcoli derivati: DBH = trunk_circumference / pi, Eta = anno_corrente - plant_year",
+      "en": "Vienna trees dataset (BAUMKATOGD) with 229,298 trees.\nMain columns:\n- objectid: Unique tree ID\n- district: District number (1-23)\n- genus_species: Species name (e.g. \"Acer platanoides\")\n- plant_year: Planting year\n- trunk_circumference: Trunk circumference in cm\n- tree_height: Height category (coded)\n- crown_diameter: Crown diameter category (coded)\n- object_street: Street name\nDerived calculations: DBH = trunk_circumference / pi, Age = current_year - plant_year"
+    },
+    "has_gps": false,
+    "diameter_field": "trunk_circumference",
+    "diameter_is_circumference": true
+  },
+  "milano": {
+    "db_path": "dataset/dataset_milano.db",
+    "table_name": "milano_trees",
+    "description": {
+      "it": "Dataset degli alberi di Milano con 251.165 alberi.\nColonne principali:\n- _id: ID univoco albero\n- district: Numero municipio (1-9)\n- genere: Genere botanico (es. \"Prunus\", \"Acer\")\n- specie: Specie botanica (es. \"cerasifera\", \"platanoides\")\n- varieta: Varieta (es. \"Pissardii\")\n- genus_species: Nome completo specie (genere + specie)\n- trunk_diameter_cm: Diametro tronco in cm (NON circonferenza!)\n- crown_diameter_m: Diametro chioma in metri\n- height_m: Altezza in metri\n- street: Nome via/localita\n- plant_year: Anno di piantumazione\n- longitude, latitude: Coordinate GPS\nNota: trunk_diameter_cm e gia il diametro, NON la circonferenza (a differenza di Vienna)",
+      "en": "Milan trees dataset with 251,165 trees.\nMain columns:\n- _id: Unique tree ID\n- district: Municipality number (1-9)\n- genere: Botanical genus (e.g. \"Prunus\", \"Acer\")\n- specie: Botanical species (e.g. \"cerasifera\", \"platanoides\")\n- varieta: Variety (e.g. \"Pissardii\")\n- genus_species: Full species name (genus + species)\n- trunk_diameter_cm: Trunk diameter in cm (NOT circumference!)\n- crown_diameter_m: Crown diameter in meters\n- height_m: Height in meters\n- street: Street name/location\n- plant_year: Planting year\n- longitude, latitude: GPS coordinates\nNote: trunk_diameter_cm is already the diameter, NOT circumference (unlike Vienna)"
+    },
+    "has_gps": true,
+    "diameter_field": "trunk_diameter_cm",
+    "diameter_is_circumference": false
+  },
+  "_static_tools": [
+    {
+      "name": "calculate_co2",
+      "description": {"it": "Calcola sequestro CO2 per singoli alberi", "en": "Calculate CO2 sequestration for individual trees"},
+      "keywords": ["co2", "carbonio", "carbon", "sequestro", "sequestration", "singolo", "single"]
+    },
+    {
+      "name": "calculate_co2_aggregate",
+      "description": {"it": "Calcola CO2 totale/media per gruppi di alberi", "en": "Calculate total/average CO2 for groups of trees"},
+      "keywords": ["co2", "carbonio", "carbon", "totale", "total", "media", "average", "tutti", "all", "aggregato", "aggregate"]
+    },
+    {
+      "name": "get_carbon_content",
+      "description": {"it": "Ottiene frazione di carbonio per specie", "en": "Get carbon fraction by species"},
+      "keywords": ["carbonio", "carbon", "contenuto", "content", "frazione", "fraction"]
+    },
+    {
+      "name": "environment_estimation",
+      "description": {"it": "Calcola volume, biomassa con formule alternative", "en": "Compute volume, biomass using alternative formulas"},
+      "keywords": ["ambiente", "environment", "stima", "estimation"]
+    },
+    {
+      "name": "query_dataset",
+      "description": {"it": "Query dataset alberi Vienna/Milano con SQL", "en": "Query Vienna/Milano tree datasets with SQL"},
+      "keywords": ["dataset", "alberi", "trees", "quanti", "count", "specie", "species", "query", "cerca", "search", "trova", "find"]
+    },
+    {
+      "name": "query_species_list",
+      "description": {"it": "Query tassonomia e tratti delle piante", "en": "Query plant taxonomy and traits"},
+      "keywords": ["tassonomia", "taxonomy", "tratti", "traits", "famiglia", "family", "specie", "species"]
+    },
+    {
+      "name": "generate_chart",
+      "description": {"it": "Crea visualizzazioni interattive", "en": "Create interactive charts and visualizations"},
+      "keywords": ["grafico", "chart", "visualizza", "visualize", "plot", "bar", "pie", "torta", "istogramma", "histogram"]
+    },
+    {
+      "name": "generate_map",
+      "description": {"it": "Crea mappe interattive (solo Milano)", "en": "Create interactive maps (Milano only)"},
+      "keywords": ["mappa", "map", "posizione", "location", "gps", "coordinate", "markers", "heatmap"]
+    },
+    {
+      "name": "calculate_heyer_volume",
+      "description": {"it": "Calcola volume con formula Heyer", "en": "Calculate volume using Heyer formula"},
+      "keywords": ["volume", "heyer", "sezioni", "sections"]
+    },
+    {
+      "name": "calculate_general_volume",
+      "description": {"it": "Calcola volume con V = a(D2H)", "en": "Calculate volume using V = a(D2H)"},
+      "keywords": ["volume", "generale", "general", "dbh"]
+    },
+    {
+      "name": "calculate_simplified_volume",
+      "description": {"it": "Calcola volume con V = 0.77(D2)", "en": "Calculate volume using V = 0.77(D2)"},
+      "keywords": ["volume", "semplificato", "simplified", "quick"]
+    },
+    {
+      "name": "calculate_allometric_relation",
+      "description": {"it": "Calcola relazione allometrica Y = aX^b", "en": "Calculate Y = aX^b allometric relation"},
+      "keywords": ["allometria", "allometric", "relazione", "relation"]
+    },
+    {
+      "name": "calculate_log_allometric",
+      "description": {"it": "Calcola forma logaritmica allometrica", "en": "Calculate logarithmic allometric form"},
+      "keywords": ["logaritmo", "log", "allometria", "allometric"]
+    },
+    {
+      "name": "calculate_model_error",
+      "description": {"it": "Calcola errore relativo del modello", "en": "Calculate relative model error"},
+      "keywords": ["errore", "error", "modello", "model", "accuratezza", "accuracy"]
+    },
+    {
+      "name": "calculate_log_fuel_biomass",
+      "description": {"it": "Calcola fuel/biomassa con trasformata log", "en": "Calculate fuel/biomass with log transform"},
+      "keywords": ["fuel", "combustibile", "biomassa", "biomass"]
+    },
+    {
+      "name": "calculate_leaf_biomass",
+      "description": {"it": "Calcola biomassa fogliare", "en": "Calculate leaf biomass"},
+      "keywords": ["foglie", "leaf", "biomassa", "biomass", "chioma", "canopy"]
+    },
+    {
+      "name": "calculate_stem_biomass",
+      "description": {"it": "Calcola biomassa del fusto", "en": "Calculate stem biomass"},
+      "keywords": ["fusto", "stem", "biomassa", "biomass", "tronco", "trunk"]
+    },
+    {
+      "name": "calculate_root_biomass",
+      "description": {"it": "Calcola biomassa radicale", "en": "Calculate root biomass"},
+      "keywords": ["radici", "root", "biomassa", "biomass", "sotterraneo"]
+    },
+    {
+      "name": "calculate_total_biomass",
+      "description": {"it": "Calcola biomassa totale albero", "en": "Calculate total tree biomass"},
+      "keywords": ["biomassa", "biomass", "totale", "total"]
+    },
+    {
+      "name": "search_papers",
+      "description": {"it": "Cerca paper scientifici su arXiv/PubMed", "en": "Search scientific papers on arXiv/PubMed"},
+      "keywords": ["paper", "articoli", "articles", "ricerca", "research", "scientifici", "scientific", "pubmed", "arxiv"]
+    },
+    {
+      "name": "export_data",
+      "description": {"it": "Esporta dati in formato CSV o Excel", "en": "Export data to CSV or Excel format"},
+      "keywords": ["esporta", "export", "csv", "excel", "scarica", "download", "salva", "save", "xlsx", "spreadsheet", "foglio"]
+    }
+  ],
+  "_simple_query_patterns": {
+    "it": ["quanti", "quanto", "quante", "mostra", "mostrami", "visualizza", "calcola", "calcolare", "lista", "elenca"],
+    "en": ["how many", "how much", "show", "display", "list", "calculate", "compute"]
+  }
+}
