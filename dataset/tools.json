@@ -263,6 +263,57 @@
       ],
       "fonte": "Paoletti et al.",
       "note": "Per specie non presenti nell'elenco, utilizzare i valori medi generali (4.6 kg C/anno per alberi giovani/medi, 11.4 kg C/anno per alberi maturi). Per convertire in CO2 equivalente, moltiplicare il valore di C per 3.67 (rapporto peso molecolare CO2/C)."
+    },
+
+    {
+      "titolo": "Proiezione del Sequestro Futuro e Conversione Capitale Legnoso",
+      "funzione": "C_futuro(t) = C_attuale + Σ(C_annuo(età_i))",
+      "descrizione": "Modello dinamico per convertire la biomassa legnosa in carbonio e proiettare il sequestro futuro nel tempo. Tiene conto della variazione del tasso di sequestro in base all'età dell'albero (giovane vs maturo).",
+      "keywords": ["proiezione", "projection", "futuro", "future", "trend", "dinamico", "dynamic", "capitale legnoso", "woody capital", "conversione", "conversion", "crescita", "growth"],
+      "variabili": [
+        {
+          "nome": "biomassa_kg",
+          "descrizione": "Biomassa legnosa totale in kg (peso secco). Può essere calcolata da volume × densità del legno."
+        },
+        {
+          "nome": "volume_m3",
+          "descrizione": "Volume del legno in metri cubi. Alternativo a biomassa_kg."
+        },
+        {
+          "nome": "densità_legno_kg_m3",
+          "descrizione": "Densità del legno in kg/m³ (default 600 kg/m³). Usata per convertire volume in biomassa."
+        },
+        {
+          "nome": "frazione_carbonio",
+          "descrizione": "Frazione di carbonio nella biomassa secca (default 0.47 = 47%). C = Biomassa × CF."
+        },
+        {
+          "nome": "età_attuale",
+          "descrizione": "Età stimata dell'albero in anni. Determina se usare tasso giovane o maturo."
+        },
+        {
+          "nome": "anni_proiezione",
+          "descrizione": "Numero di anni per la proiezione futura (default 30)."
+        },
+        {
+          "nome": "età_maturità",
+          "descrizione": "Età alla quale l'albero raggiunge la maturità (default 50 anni). Dopo questa età si usa il tasso di sequestro maturo."
+        }
+      ],
+      "formule": {
+        "biomassa_da_volume": "Biomassa (kg) = Volume (m³) × Densità (kg/m³)",
+        "carbonio_da_biomassa": "C (kg) = Biomassa (kg) × CF",
+        "co2_da_carbonio": "CO2 (kg) = C (kg) × 3.67",
+        "proiezione_annuale": "C_anno(i) = C_tasso(età_i) × n_alberi"
+      },
+      "output": {
+        "stock_attuale": "Carbonio e CO2 stoccati attualmente",
+        "proiezione_annuale": "Sequestro anno per anno con cumulative",
+        "sommario_decennale": "Sequestro totale per decade",
+        "stock_finale": "Stock di carbonio proiettato a fine periodo"
+      },
+      "fonte": "Paoletti et al. per tassi di sequestro; IPCC per fattori di conversione",
+      "note": "Il modello considera la transizione da tasso giovane a tasso maturo quando l'albero supera l'età di maturità. Per specie non note, vengono usati valori medi (4.6 kg C/anno giovane, 11.4 kg C/anno maturo)."
     }
   ]
   
