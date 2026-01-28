@@ -210,19 +210,81 @@ The project includes an intelligent chatbot interface built with:
 - **OpenAI GPT-4**: Language model
 - **SQLite**: Conversation persistence
 
-#### Features
+#### Agent Capabilities (Tools)
 
-The chatbot can:
+The chatbot agent has access to **20+ specialized tools** organized in the following categories:
 
-1. **Calculate CO2 sequestration** for individual trees given measurements (DBH, height, wood density)
-2. **Query the Vienna trees dataset** (BAUMKATOGD.csv) with:
-   - Filtering by district, species, plant year
-   - Aggregations and statistics
-   - Random sampling
-   - Count queries
-3. **Generate interactive charts** (bar, pie, line, scatter, histogram, box plots) from the dataset
-4. **Compute environmental estimates** (volume, biomass, carbon stock)
-5. **Maintain conversation history** with multi-session support
+##### 1. CO2 & Carbon Calculations
+
+| Tool | Description | Example Questions |
+|------|-------------|-------------------|
+| **CO2 Calculation** | Calculate CO2 sequestration for single trees using Chave et al. (2014) allometric equations | "Calcola CO2 per un albero con DBH 30cm e altezza 15m" |
+| **CO2 Aggregate** | Calculate total carbon stock for groups of trees from the dataset | "Quanto carbonio stoccano tutti i Platanus del distretto 5?" |
+| **Carbon Sequestration Lookup** | Annual carbon sequestration rates per species (Paoletti et al.) | "Quanto carbonio sequestra un Acer platanoides all'anno?" |
+| **Carbon Projection** | Project future carbon sequestration trends over time | "Proiezione a 30 anni per 10 tigli di 20 anni" |
+| **Carbon Content Lookup** | Species-specific carbon fraction (Martin et al., 2018) | "Qual è la frazione di carbonio per la quercia?" |
+
+##### 2. Biomass Calculations
+
+| Tool | Description |
+|------|-------------|
+| **Total Biomass** | Total biomass = e^(-4.2) × D^1.36 × H^0.57 × age^1.67 × (R/S)^(-0.3) × 1.23 |
+| **Stem Biomass** | Stem biomass with interaction term (D × age) |
+| **Leaf Biomass** | Leaf biomass estimation |
+| **Root Biomass** | Below-ground biomass estimation |
+| **Ipogeo/Epigeo Ratios** | Root-to-shoot ratios for hardwood/softwood from dataset |
+
+##### 3. Volume Calculations
+
+| Tool | Description |
+|------|-------------|
+| **General Volume** | V = a × D² × H (classic allometric model) |
+| **Heyer Volume** | Heyer formula for volume estimation |
+| **Simplified Volume** | Simplified volume calculation |
+
+##### 4. Allometric Relations
+
+| Tool | Description |
+|------|-------------|
+| **General Allometric** | Y = a × X^b (fundamental allometric equation) |
+| **Log Allometric** | Logarithmic allometric relationships |
+| **Log Fuel Biomass** | Fuel biomass estimation |
+
+##### 5. Dataset Queries
+
+| Tool | Description | Example Questions |
+|------|-------------|-------------------|
+| **Tree Dataset Query** | Natural language to SQL for Vienna/Milano datasets (~230K trees) | "Quanti alberi ci sono nel distretto 19?", "Top 5 specie più comuni" |
+| **Species List Query** | Taxonomy and traits lookup (family, order, growth form, leaf type) | "Dimmi la famiglia dell'Acer platanoides", "Specie del genere Abies" |
+
+##### 6. Visualizations
+
+| Tool | Description | Example Questions |
+|------|-------------|-------------------|
+| **Chart Generation** | 6 chart types: bar, pie, line, scatter, histogram, box plot | "Grafico a barre degli alberi per distretto", "Istogramma dell'età" |
+| **Map Generation** | Interactive maps: markers, clusters, heatmaps (requires GPS coordinates) | "Mappa dei tigli a Milano", "Heatmap della distribuzione degli alberi" |
+
+##### 7. Research & Export
+
+| Tool | Description | Example Questions |
+|------|-------------|-------------------|
+| **Scientific Paper Search** | Search arXiv and PubMed for scientific papers | "Cerca paper su carbon sequestration in urban trees" |
+| **Data Export** | Export query results to CSV or Excel | "Esporta i risultati in CSV" |
+
+##### 8. Environmental Estimates
+
+| Tool | Description |
+|------|-------------|
+| **Environment Estimation** | Volume, biomass, carbon stock with confidence metrics |
+
+#### Scientific References
+
+All calculations are based on peer-reviewed scientific literature:
+
+- **Chave et al. (2014)**: AGB allometric equations - [DOI:10.1111/gcb.12629](https://doi.org/10.1111/gcb.12629)
+- **Martin et al. (2018)**: Carbon content of tree tissues - [DOI:10.1007/s10021-017-0198-4](https://doi.org/10.1007/s10021-017-0198-4)
+- **Paoletti et al.**: Annual carbon sequestration rates per species
+- **Cairns et al. (1997)**: Root biomass allocation - [DOI:10.1007/s004420050128](https://doi.org/10.1007/s004420050128)
 
 #### Setup
 
@@ -267,12 +329,35 @@ Ask the chatbot questions like:
 - "Quanti alberi ci sono nel distretto 19?"
 - "Mostrami gli alberi Acer piantati dopo il 2000"
 - "Statistiche per distretto"
-- "Dammi 5 alberi casuali"
+- "Qual è l'albero più vecchio del dataset?"
+- "Top 10 specie più comuni"
 
-**CO2 calculations:**
+**CO2 calculations (single tree):**
 
 - "Calcola il CO2 sequestrato da un albero con diametro 30 cm e altezza 15 metri"
 - "Quanta biomassa ha un Acer con circonferenza tronco 94 cm e altezza 12 m?"
+
+**CO2 aggregate (groups of trees):**
+
+- "Quanto carbonio stoccano tutti i Platanus del distretto 5?"
+- "Stock di CO2 totale per tutti gli alberi del distretto 19"
+
+**Carbon sequestration rates:**
+
+- "Quanto carbonio sequestra un Acer platanoides all'anno?"
+- "Confronta il sequestro annuale di carbonio tra Tilia e Quercus"
+- "Stoccaggio annuale di carbonio per 100 tigli"
+
+**Future projections:**
+
+- "Proiezione a 30 anni per un tiglio di 20 anni"
+- "Quanto carbonio avrà un acero tra 50 anni?"
+
+**Species lookup:**
+
+- "Qual è la frazione di carbonio per la quercia?"
+- "Dimmi la famiglia e l'ordine di Acer platanoides"
+- "Quali specie sono della famiglia Pinaceae?"
 
 **Chart generation:**
 
@@ -282,77 +367,79 @@ Ask the chatbot questions like:
 - "Crea un grafico a linee delle piantumazioni per anno dal 1950"
 - "Mostra un box plot della circonferenza per le specie principali"
 
-**Environmental estimates:**
+**Map generation (Milano dataset only):**
 
-- "Stima il volume di un albero con diametro 25 cm"
-- "Calcola carbonio stoccato per diametro 40 cm e altezza 18 m"
+- "Mostra una mappa con tutti i tigli"
+- "Crea una heatmap della distribuzione degli alberi a Milano"
+- "Visualizza su mappa gli alberi del municipio 3"
+
+**Scientific papers:**
+
+- "Cerca paper su carbon sequestration in urban trees"
+- "Trova articoli scientifici su allometric equations for biomass"
+
+**Data export:**
+
+- "Esporta i risultati in CSV"
+- "Scarica i dati in Excel"
 
 #### Architecture
 
-```
+```text
 streamlit_app/
 ├── app.py              # Main entry point
-├── ui.py               # Streamlit UI components (with chart visualization)
+├── ui.py               # Streamlit UI components (with chart/map visualization)
 ├── service.py          # Chat service with agent integration
 ├── repository.py       # SQLite persistence layer
 ├── models.py           # Domain models (Conversation, ChatMessage)
-├── agent.py            # LangGraph agent orchestrator
-└── tools/              # LangChain tools
-    ├── co2_tool.py           # CO2 calculation tool
-    ├── environment_tool.py   # Environmental estimates tool
-    ├── dataset_tool.py       # Dataset query tool
-    └── chart_tool.py         # ⭐ NEW: Interactive chart generation tool
+├── agent/              # LangGraph agent modules
+│   ├── core.py         # Main agent orchestrator
+│   ├── state.py        # Agent state management
+│   ├── prompts.py      # System prompts and templates
+│   └── ...
+└── tools/              # 20+ LangChain tools
+    ├── co2_tool.py                 # CO2 calculation (single tree)
+    ├── co2_aggregate_tool.py       # CO2 aggregate (groups of trees)
+    ├── carbon_sequestration_tool.py # Annual sequestration rates
+    ├── carbon_projection_tool.py   # Future carbon projections
+    ├── carbon_content_tool.py      # Species carbon fractions
+    ├── total_biomass_tool.py       # Total biomass calculation
+    ├── stem_biomass_tool.py        # Stem biomass
+    ├── leaf_biomass_tool.py        # Leaf biomass
+    ├── root_biomass_tool.py        # Root biomass
+    ├── ipogeo_epigeo_tool.py       # Root/shoot ratios
+    ├── general_volume_tool.py      # Volume equations
+    ├── heyer_volume_tool.py        # Heyer volume formula
+    ├── allometric_relation_tool.py # General allometric Y = a × X^b
+    ├── dataset_tool.py             # Vienna/Milano dataset queries
+    ├── species_list_tool.py        # Taxonomy and traits lookup
+    ├── chart_tool.py               # Interactive Plotly charts
+    ├── map_tool.py                 # Interactive Folium maps
+    ├── paper_search_tool.py        # arXiv/PubMed search
+    ├── export_tool.py              # CSV/Excel export
+    ├── environment_tool.py         # Environmental estimates
+    └── ...
 ```
 
 The agent uses LangGraph to orchestrate tool calls:
 
 1. User sends message
-2. Agent (GPT-4) decides which tool(s) to call
-3. Tools execute (call existing FastAPI services or query dataset)
-4. Agent synthesizes response in Italian
+2. Agent (GPT-4) analyzes query and selects appropriate tool(s)
+3. Tools execute (call FastAPI services, query datasets, generate visualizations)
+4. Agent synthesizes response in Italian with scientific references
 5. Response stored in SQLite and shown to user
 
-#### Tool Details
+#### Key Tool Features
 
-**CO2CalculationTool**: Wraps `CO2CalculationService` from FastAPI
+**Natural Language to SQL**: Both `DatasetQueryTool` and `SpeciesListQueryTool` translate natural language questions into optimized SQL queries with automatic vector search for large result sets.
 
-- Calculates AGB, BGB, total biomass, carbon, CO2 stock
-- Uses Chave et al. (2014) allometric equation
-- Supports custom wood density per species
+**Scientific References**: All calculation tools return the formulas used and their scientific sources (DOI links).
 
-**EnvironmentEstimationTool**: Wraps `EnvironmentalEstimationService`
+**Species-Specific Parameters**: Tools like `CO2AggregateTool` automatically look up species-specific carbon fractions and root-to-shoot ratios from the included datasets (`carbon_content.csv`, `ipogeo_epigeo.csv`, `c_sequestration.csv`).
 
-- Computes volume, biomass, carbon with alternative formulas
-- Works with/without height data
-- Provides confidence metrics
+**Interactive Visualizations**: Charts (Plotly) and maps (Folium) are interactive with zoom, pan, hover tooltips, and export capabilities.
 
-**DatasetQueryTool**: Direct SQL queries on BAUMKATOGD database with automatic vector search
-
-- Summary statistics (total trees, species count, districts)
-- Filtering (district, species, plant year range)
-- Aggregations (group by district/species with medians)
-- Random sampling for data exploration
-- Count queries with filters
-- Natural language to SQL translation with LLM
-- **🔍 Automatic Vector Search**: When query results exceed 100 rows, the tool automatically:
-  - Uses **LangChain's InMemoryVectorStore** (no external database required!)
-  - Creates embeddings for all results using OpenAI `text-embedding-3-small`
-  - Performs semantic similarity search based on the natural language query
-  - Returns top 50 most relevant results
-  - **Zero token overflow errors** - intelligent result filtering prevents rate limit issues
-  - Completely in-memory, fast and lightweight
-  - User sees: "Vector search applied: showing top 50 most relevant results out of N total rows"
-
-**ChartGenerationTool**: Interactive chart generation with Plotly
-
-- 6 chart types: bar, pie, line, scatter, histogram, box plot
-- Natural language query translation to optimized SQL
-- Automatic chart configuration based on data type
-- Interactive visualizations with zoom, pan, hover
-- Export-ready charts (HTML, PNG, SVG)
-- Supports custom titles and axis labels
-
-See [CHART_TOOL_GUIDE.md](CHART_TOOL_GUIDE.md) for detailed documentation and examples.
+See [CHART_TOOL_GUIDE.md](CHART_TOOL_GUIDE.md) for detailed chart documentation.
 
 #### Configuration
 
