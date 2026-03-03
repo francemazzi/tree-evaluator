@@ -5,12 +5,13 @@ from typing import Optional
 
 from app.models.co2 import CO2CalculationRequest, CO2CalculationResponse
 from app.services.carbon_content_service import CarbonContentService
+from streamlit_app.constants import CHAVE_EXPONENT, CHAVE_INTERCEPT, CO2_C_RATIO
 
 
 @dataclass
 class AllometryCoefficients:
-    intercept: float = 0.0673
-    exponent: float = 0.976
+    intercept: float = CHAVE_INTERCEPT
+    exponent: float = CHAVE_EXPONENT
 
 
 class CO2CalculationService:
@@ -39,11 +40,11 @@ class CO2CalculationService:
         bgb_t = request.root_shoot_ratio * agb_t
         total_biomass_t = agb_t + bgb_t
         carbon_t = total_biomass_t * carbon_fraction
-        co2_stock_t = carbon_t * (44.0 / 12.0)
+        co2_stock_t = carbon_t * CO2_C_RATIO
 
         co2_annual_t: Optional[float] = None
         if request.annual_biomass_increment_t is not None:
-            co2_annual_t = request.annual_biomass_increment_t * carbon_fraction * (44.0 / 12.0)
+            co2_annual_t = request.annual_biomass_increment_t * carbon_fraction * CO2_C_RATIO
 
         return CO2CalculationResponse(
             agb_t=round(agb_t, 6),

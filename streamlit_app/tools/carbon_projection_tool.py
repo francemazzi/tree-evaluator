@@ -9,6 +9,14 @@ from typing import Any, Dict, List, Optional, Type
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.constants import (
+    CO2_C_RATIO,
+    DEFAULT_CARBON_FRACTION,
+    DEFAULT_SEQUESTRATION_MATURITA_KG_YEAR,
+    DEFAULT_SEQUESTRATION_MEDIO_KG_YEAR,
+    DEFAULT_WOOD_DENSITY_KG_M3,
+)
+
 
 class CarbonProjectionInput(BaseModel):
     """Input schema for carbon projection tool."""
@@ -23,12 +31,12 @@ class CarbonProjectionInput(BaseModel):
         description="Wood volume in cubic meters. Use this OR biomass_kg.",
     )
     wood_density_kg_m3: float = Field(
-        default=600.0,
-        description="Wood density in kg/m³ (default 600). Used only when volume_m3 is provided.",
+        default=DEFAULT_WOOD_DENSITY_KG_M3,
+        description=f"Wood density in kg/m³ (default {DEFAULT_WOOD_DENSITY_KG_M3:.0f}). Used only when volume_m3 is provided.",
     )
     carbon_fraction: float = Field(
-        default=0.47,
-        description="Carbon fraction of dry biomass (default 0.47 = 47%).",
+        default=DEFAULT_CARBON_FRACTION,
+        description=f"Carbon fraction of dry biomass (default {DEFAULT_CARBON_FRACTION} = {DEFAULT_CARBON_FRACTION*100:.0f}%).",
     )
 
     # Projection inputs
@@ -127,8 +135,8 @@ class CarbonProjectionTool(BaseTool):
 
     def _get_species_rate(self, species: Optional[str], is_mature: bool) -> float:
         """Get sequestration rate for species, or default if not found."""
-        default_medio = 4.6  # kg C/year
-        default_maturita = 11.4  # kg C/year
+        default_medio = DEFAULT_SEQUESTRATION_MEDIO_KG_YEAR
+        default_maturita = DEFAULT_SEQUESTRATION_MATURITA_KG_YEAR
 
         if not species:
             return default_maturita if is_mature else default_medio
@@ -170,7 +178,7 @@ class CarbonProjectionTool(BaseTool):
             return {"biomass_kg": 0, "carbon_kg": 0, "carbon_t": 0, "co2_kg": 0, "co2_t": 0}
 
         carbon_kg = biomass_kg * carbon_fraction
-        co2_kg = carbon_kg * 3.67  # CO2/C molecular weight ratio
+        co2_kg = carbon_kg * CO2_C_RATIO
 
         return {
             "biomass_kg": round(biomass_kg, 2),
@@ -207,9 +215,9 @@ class CarbonProjectionTool(BaseTool):
                 "age": age,
                 "is_mature": is_mature,
                 "annual_c_kg": round(annual_c_kg, 2),
-                "annual_co2_kg": round(annual_c_kg * 3.67, 2),
+                "annual_co2_kg": round(annual_c_kg * CO2_C_RATIO, 2),
                 "cumulative_c_kg": round(cumulative_c, 2),
-                "cumulative_co2_kg": round(cumulative_c * 3.67, 2),
+                "cumulative_co2_kg": round(cumulative_c * CO2_C_RATIO, 2),
                 "total_c_stock_kg": round(current_carbon_kg + cumulative_c, 2),
             })
 
@@ -234,19 +242,19 @@ class CarbonProjectionTool(BaseTool):
             "decades_summary": decades,
             "total_sequestration_c_kg": round(total_sequestration_kg, 2),
             "total_sequestration_c_t": round(total_sequestration_kg / 1000, 4),
-            "total_sequestration_co2_kg": round(total_sequestration_kg * 3.67, 2),
-            "total_sequestration_co2_t": round(total_sequestration_kg * 3.67 / 1000, 4),
+            "total_sequestration_co2_kg": round(total_sequestration_kg * CO2_C_RATIO, 2),
+            "total_sequestration_co2_t": round(total_sequestration_kg * CO2_C_RATIO / 1000, 4),
             "final_c_stock_kg": round(final_stock_kg, 2),
             "final_c_stock_t": round(final_stock_kg / 1000, 4),
-            "final_co2_stock_t": round(final_stock_kg * 3.67 / 1000, 4),
+            "final_co2_stock_t": round(final_stock_kg * CO2_C_RATIO / 1000, 4),
         }
 
     def _run(
         self,
         biomass_kg: Optional[float] = None,
         volume_m3: Optional[float] = None,
-        wood_density_kg_m3: float = 600.0,
-        carbon_fraction: float = 0.47,
+        wood_density_kg_m3: float = DEFAULT_WOOD_DENSITY_KG_M3,
+        carbon_fraction: float = DEFAULT_CARBON_FRACTION,
         species: Optional[str] = None,
         current_age_years: int = 20,
         projection_years: int = 30,

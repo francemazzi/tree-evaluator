@@ -7,6 +7,8 @@ from typing import Optional, Type
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.constants import DEFAULT_CARBON_FRACTION
+
 # Add app directory to path
 app_dir = Path(__file__).parent.parent.parent / "app"
 if str(app_dir) not in sys.path:
@@ -25,8 +27,8 @@ class EnvironmentEstimationInput(BaseModel):
         description="Tree height in meters (optional, if not provided uses diameter-only formula)",
     )
     carbon_fraction: float = Field(
-        default=0.47,
-        description="Carbon fraction of dry biomass (default 0.47)",
+        default=DEFAULT_CARBON_FRACTION,
+        description=f"Carbon fraction of dry biomass (default {DEFAULT_CARBON_FRACTION})",
     )
 
 
@@ -63,7 +65,7 @@ class EnvironmentEstimationTool(BaseTool):
         self,
         diameter_cm: float,
         height_m: Optional[float] = None,
-        carbon_fraction: float = 0.47,
+        carbon_fraction: float = DEFAULT_CARBON_FRACTION,
     ) -> dict:
         """Execute the environmental estimation."""
         request = EnvironmentalEstimatesRequest(

@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Type
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.constants import CO2_C_RATIO, DEFAULT_SEQUESTRATION_MATURITA_KG_YEAR, DEFAULT_SEQUESTRATION_MEDIO_KG_YEAR
+
 
 class CarbonSequestrationInput(BaseModel):
     """Input schema for carbon sequestration lookup tool."""
@@ -133,7 +135,7 @@ class CarbonSequestrationTool(BaseTool):
                     "c_maturita_kg_year": data["c_maturita_kg_year"],
                 }
         # Fallback if MEDIA row not found
-        return {"c_medio_kg_year": 4.6, "c_maturita_kg_year": 11.4}
+        return {"c_medio_kg_year": DEFAULT_SEQUESTRATION_MEDIO_KG_YEAR, "c_maturita_kg_year": DEFAULT_SEQUESTRATION_MATURITA_KG_YEAR}
 
     def _run(
         self,
@@ -189,7 +191,7 @@ class CarbonSequestrationTool(BaseTool):
 
         # Calculate totals
         total_c = rate * n_trees
-        total_co2 = total_c * 3.67  # CO2 equivalent
+        total_co2 = total_c * CO2_C_RATIO
 
         result = {
             "found": not use_mean,
@@ -213,7 +215,7 @@ class CarbonSequestrationTool(BaseTool):
         else:
             result["interpretation"] = (
                 f"Un albero di {species_data['species']} (stadio: {stage}) sequestra "
-                f"{rate} kg C/anno, equivalenti a {round(rate * 3.67, 2)} kg CO2/anno."
+                f"{rate} kg C/anno, equivalenti a {round(rate * CO2_C_RATIO, 2)} kg CO2/anno."
             )
             if n_trees > 1:
                 result["interpretation"] += (

@@ -570,10 +570,6 @@ class ChatUI:
             Tuple of (text_content, chart_data_dict or None)
         """
         # Look for chart data between markers
-        print(f"[DEBUG UI] Checking for chart markers in response (length: {len(content)})")
-        print(f"[DEBUG UI] Has CHART_DATA_START: {'CHART_DATA_START' in content}")
-        print(f"[DEBUG UI] Has CHART_DATA_END: {'CHART_DATA_END' in content}")
-        
         if "CHART_DATA_START" in content and "CHART_DATA_END" in content:
             try:
                 start_marker = "CHART_DATA_START"
@@ -584,19 +580,16 @@ class ChatUI:
                 
                 if start_idx > len(start_marker) and end_idx > start_idx:
                     json_str = content[start_idx:end_idx].strip()
-                    print(f"[DEBUG UI] Extracted JSON string length: {len(json_str)}")
                     chart_data = json.loads(json_str)
-                    print(f"[DEBUG UI] Successfully parsed chart JSON! Has chart_json: {'chart_json' in chart_data}")
                     
                     if chart_data.get("success") and "chart_json" in chart_data:
                         # Remove chart data section from text
                         text_before = content[:content.find(start_marker)].strip()
                         text_after = content[content.find(end_marker) + len(end_marker):].strip()
                         text_content = (text_before + " " + text_after).strip()
-                        print(f"[DEBUG UI] Chart extraction successful!")
                         return text_content, chart_data
-            except (json.JSONDecodeError, ValueError) as e:
-                print(f"[ERROR UI] Error parsing chart data: {e}")
+            except (json.JSONDecodeError, ValueError):
+                pass
         
         # Fallback: try old method (for backward compatibility)
         if "chart_json" in content.lower() or '"success": true' in content:
@@ -625,10 +618,6 @@ class ChatUI:
             Tuple of (text_content, map_data_dict or None)
         """
         # Look for map data between markers
-        print(f"[DEBUG UI] Checking for map markers in response (length: {len(content)})")
-        print(f"[DEBUG UI] Has MAP_DATA_START: {'MAP_DATA_START' in content}")
-        print(f"[DEBUG UI] Has MAP_DATA_END: {'MAP_DATA_END' in content}")
-        
         if "MAP_DATA_START" in content and "MAP_DATA_END" in content:
             try:
                 start_marker = "MAP_DATA_START"
@@ -639,19 +628,16 @@ class ChatUI:
                 
                 if start_idx > len(start_marker) and end_idx > start_idx:
                     json_str = content[start_idx:end_idx].strip()
-                    print(f"[DEBUG UI] Extracted map JSON string length: {len(json_str)}")
                     map_data = json.loads(json_str)
-                    print(f"[DEBUG UI] Successfully parsed map JSON! Has map_html: {'map_html' in map_data}")
                     
                     if map_data.get("success") and "map_html" in map_data:
                         # Remove map data section from text
                         text_before = content[:content.find(start_marker)].strip()
                         text_after = content[content.find(end_marker) + len(end_marker):].strip()
                         text_content = (text_before + " " + text_after).strip()
-                        print(f"[DEBUG UI] Map extraction successful!")
                         return text_content, map_data
-            except (json.JSONDecodeError, ValueError) as e:
-                print(f"[ERROR UI] Error parsing map data: {e}")
+            except (json.JSONDecodeError, ValueError):
+                pass
         
         # Fallback: try old method (for backward compatibility)
         if "map_html" in content.lower() or ('"success": true' in content and "map_type" in content):

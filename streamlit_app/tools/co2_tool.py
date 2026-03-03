@@ -7,6 +7,8 @@ from typing import Optional, Type
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.constants import DEFAULT_CARBON_FRACTION, DEFAULT_ROOT_SHOOT_RATIO, DEFAULT_WOOD_DENSITY
+
 # Add app directory to path
 app_dir = Path(__file__).parent.parent.parent / "app"
 if str(app_dir) not in sys.path:
@@ -22,16 +24,16 @@ class CO2CalculationInput(BaseModel):
     dbh_cm: float = Field(description="Diameter at breast height in centimeters (must be > 0)")
     height_m: float = Field(description="Tree height in meters (must be > 0)")
     wood_density_g_cm3: float = Field(
-        default=0.6,
-        description="Wood density in g/cm³ (default 0.6 for generic species, typical range 0.3-1.0)",
+        default=DEFAULT_WOOD_DENSITY,
+        description=f"Wood density in g/cm³ (default {DEFAULT_WOOD_DENSITY} for generic species, typical range 0.3-1.0)",
     )
     carbon_fraction: float = Field(
-        default=0.47,
-        description="Carbon fraction of dry biomass (default 0.47). Ignored if species is provided.",
+        default=DEFAULT_CARBON_FRACTION,
+        description=f"Carbon fraction of dry biomass (default {DEFAULT_CARBON_FRACTION}). Ignored if species is provided.",
     )
     root_shoot_ratio: float = Field(
-        default=0.24,
-        description="Root to shoot biomass ratio (default 0.24)",
+        default=DEFAULT_ROOT_SHOOT_RATIO,
+        description=f"Root to shoot biomass ratio (default {DEFAULT_ROOT_SHOOT_RATIO})",
     )
     species: Optional[str] = Field(
         default=None,
@@ -82,9 +84,9 @@ class CO2CalculationTool(BaseTool):
         self,
         dbh_cm: float,
         height_m: float,
-        wood_density_g_cm3: float = 0.6,
-        carbon_fraction: float = 0.47,
-        root_shoot_ratio: float = 0.24,
+        wood_density_g_cm3: float = DEFAULT_WOOD_DENSITY,
+        carbon_fraction: float = DEFAULT_CARBON_FRACTION,
+        root_shoot_ratio: float = DEFAULT_ROOT_SHOOT_RATIO,
         species: Optional[str] = None,
         annual_biomass_increment_t: Optional[float] = None,
     ) -> dict:

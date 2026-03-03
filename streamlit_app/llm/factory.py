@@ -62,7 +62,7 @@ class LlmSettingsReader:
         return LlmSettings(
             provider=provider,
             openai_api_key=openai_api_key,
-            openai_chat_model=openai_chat_model_override or os.getenv("OPENAI_CHAT_MODEL", "gpt-5"),
+            openai_chat_model=openai_chat_model_override or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o"),
             openai_fallback_model=openai_fallback_model_override or os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
             openai_embedding_model=openai_embedding_model_override or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
             ollama_base_url=(

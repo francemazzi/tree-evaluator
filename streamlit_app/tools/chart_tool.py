@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Type
@@ -9,6 +10,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class ChartGenerationInput(BaseModel):
@@ -305,8 +308,8 @@ Remember: Return ONLY valid JSON, no markdown, no explanation."""
             parsed = json.loads(response_text)
         except json.JSONDecodeError as e:
             # Log the problematic response for debugging
-            print(f"[ChartTool] Failed to parse LLM response: {response_text[:200]}...")
-            print(f"[ChartTool] JSON error: {str(e)}")
+            logger.warning("Failed to parse LLM response: %s...", response_text[:200])
+            logger.warning("JSON error: %s", e)
             raise
         
         # Validate required fields

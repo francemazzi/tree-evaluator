@@ -11,14 +11,17 @@ from typing import Any, Dict, List, Optional, Type, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
-
-# Softwood genera (conifers)
-SOFTWOOD_GENERA = {
-    "pinus", "picea", "abies", "cedrus", "larix", "pseudotsuga",
-    "tsuga", "thuja", "cupressus", "juniperus", "taxus", "sequoia",
-    "sequoiadendron", "cryptomeria", "chamaecyparis", "araucaria",
-    "podocarpus", "taxodium", "metasequoia"
-}
+from streamlit_app.constants import (
+    CHAVE_EXPONENT,
+    CHAVE_INTERCEPT,
+    CO2_C_RATIO,
+    DEFAULT_CARBON_FRACTION,
+    DEFAULT_ROOT_SHOOT_RATIO,
+    DEFAULT_WOOD_DENSITY,
+    GENUS_TO_COMMON_NAME,
+    SOFTWOOD_GENERA,
+    VIENNA_HEIGHT_MAP,
+)
 
 
 class CO2AggregateInput(BaseModel):
@@ -136,48 +139,21 @@ class CO2AggregateTool(BaseTool):
     def _get_carbon_fraction(self, species_name: str) -> tuple[float, str]:
         """Get carbon fraction for a species. Returns (fraction, source_description)."""
         if not species_name:
-            return 0.47, "valore default (47%)"
-        
+            return DEFAULT_CARBON_FRACTION, f"valore default ({DEFAULT_CARBON_FRACTION*100:.0f}%)"
+
         # Extract genus from species name (e.g., "Platanus x acerifolia" -> "Platanus")
         genus = species_name.split()[0].lower() if species_name else ""
-        
+
         # Try to find exact match or partial match in carbon content data
         for species_key, fraction in self._carbon_content_data.items():
             if species_key in species_name.lower() or genus in species_key:
                 return fraction, f"da carbon_content.csv per '{species_key}'"
-        
-        # Common mappings for genus to common name
-        genus_to_common = {
-            "platanus": "poplar",  # Platano simile a Pioppo
-            "acer": "maple",
-            "quercus": "oak",
-            "fraxinus": "ash",
-            "tilia": "basswood",
-            "betula": "birch",
-            "fagus": "beech",
-            "ulmus": "elm",
-            "populus": "poplar",
-            "salix": "willow",
-            "pinus": "pine",
-            "picea": "spruce",
-            "abies": "fir",
-            "cedrus": "cedar",
-            "larix": "larch",
-            "eucalyptus": "eucalyptus",
-            "alnus": "alder",
-            "carpinus": "hornbeam",
-            "castanea": "hickory",
-            "juglans": "hickory",
-            "prunus": "cherry, fire",
-            "robinia": "oak",  # No direct match, use oak as similar hardwood
-            "aesculus": "hickory",
-        }
-        
-        common_name = genus_to_common.get(genus, "")
+
+        common_name = GENUS_TO_COMMON_NAME.get(genus, "")
         if common_name and common_name in self._carbon_content_data:
             return self._carbon_content_data[common_name], f"da carbon_content.csv per '{common_name}' (genere {genus})"
-        
-        return 0.47, "valore default (47%) - specie non trovata in carbon_content.csv"
+
+        return DEFAULT_CARBON_FRACTION, f"valore default ({DEFAULT_CARBON_FRACTION*100:.0f}%) - specie non trovata in carbon_content.csv"
     
     def _get_root_shoot_ratio(self, species_name: str) -> tuple[float, str]:
         """Get root-to-shoot ratio based on species type (hardwood/softwood)."""
@@ -197,7 +173,7 @@ class CO2AggregateTool(BaseTool):
             return round(ratio, 4), f"da ipogeo_epigeo.csv per {group_name} ({roots}/{agb})"
         
         # Fallback
-        return 0.24, "valore default"
+        return DEFAULT_ROOT_SHOOT_RATIO, "valore default"
 
     def _get_connection(self) -> sqlite3.Connection:
         if not self._db_path.exists():
@@ -268,10 +244,7 @@ class CO2AggregateTool(BaseTool):
         """Calculate metrics for Vienna dataset."""
         # 1. Map Height
         # 1=0-5, 2=6-10, 3=11-15, 4=16-20, 5=21-25, 6=26-30, 7=31-35, 8=>35
-        height_map = {
-            0: 0, 1: 2.5, 2: 8, 3: 13, 4: 18, 5: 23, 6: 28, 7: 33, 8: 38
-        }
-        df['height_m'] = df['tree_height'].map(height_map).fillna(0)
+        df['height_m'] = df['tree_height'].map(VIENNA_HEIGHT_MAP).fillna(0)
         
         # 2. Calculate DBH (cm)
         df['dbh_cm'] = df['trunk_circumference'] / math.pi
@@ -296,7 +269,7 @@ class CO2AggregateTool(BaseTool):
         # Get species-specific parameters
         carbon_fraction, cf_source = self._get_carbon_fraction(dominant_species)
         root_shoot_ratio, rs_source = self._get_root_shoot_ratio(dominant_species)
-        wood_density = 0.6  # default (could be extended to species-specific)
+        wood_density = DEFAULT_WOOD_DENSITY
         
         # Store parameter info for result
         params_info = {
@@ -321,9 +294,8 @@ class CO2AggregateTool(BaseTool):
         mask = (df['dbh_cm'] > 0) & (df['height_m'] > 0)
         valid_df = df[mask].copy()
         
-        # AGB = 0.0673 * (WD * DBH^2 * H)^0.976  (DBH in cm, H in m, result in kg)
-        a = 0.0673
-        b = 0.976
+        a = CHAVE_INTERCEPT
+        b = CHAVE_EXPONENT
         
         valid_df['agb_kg'] = a * ((wood_density * (valid_df['dbh_cm']**2) * valid_df['height_m'])**b)
         
@@ -340,7 +312,7 @@ class CO2AggregateTool(BaseTool):
         valid_df['carbon_t'] = valid_df['total_biomass_t'] * carbon_fraction
         
         # CO2
-        valid_df['co2_t'] = valid_df['carbon_t'] * (44.0 / 12.0)
+        valid_df['co2_t'] = valid_df['carbon_t'] * CO2_C_RATIO
         
         return valid_df, params_info
 

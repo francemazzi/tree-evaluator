@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 from streamlit_app.models import ChatMessage, Conversation, UserLlmSettings
 from streamlit_app.repository import ChatRepository
+
+logger = logging.getLogger(__name__)
 
 
 class ChatService:
@@ -173,19 +176,17 @@ class ChatService:
         except ImportError as e:
             import streamlit as st
             st.error(f"❌ Errore import dipendenze: {e}\nInstalla: pip install -r requirements.txt")
-            print(f"Import error: {e}")
+            logger.error("Import error: %s", e)
             return None
         except ValueError as e:
             import streamlit as st
             st.error(f"❌ Chiave API non valida: {e}")
-            print(f"ValueError: {e}")
+            logger.error("ValueError: %s", e)
             return None
         except Exception as e:
             import streamlit as st
             st.error(f"❌ Errore inizializzazione agent: {e}")
-            print(f"Agent init error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception("Agent init error: %s", e)
             return None
 
     def _generate_fake_reply(self, user_id: str, conversation_id: int, last_user_message: str, openai_api_key: Optional[str] = None) -> ChatMessage:
@@ -207,7 +208,7 @@ class ChatService:
                 reply_text = agent.chat(last_user_message, history=history_dicts)
             except Exception as e:
                 # Fallback to demo response if agent fails
-                print(f"Warning: Agent failed, using fallback: {e}")
+                logger.warning("Agent failed, using fallback: %s", e)
                 timestamp = datetime.utcnow().strftime("%H:%M:%S")
                 reply_text = (
                     f"Echo ({timestamp}): I received your message — '{last_user_message}'. "
@@ -272,9 +273,7 @@ class ChatService:
                     return reply
                     
             except Exception as e:
-                print(f"Warning: Agent streaming failed: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.exception("Agent streaming failed: %s", e)
 
                 fallback_text = self._format_llm_error_for_user(preferences, e, last_user_message)
                 yield {"type": "response", "content": fallback_text}

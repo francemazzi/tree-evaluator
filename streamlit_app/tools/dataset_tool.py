@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import sqlite3
 from pathlib import Path
@@ -10,6 +11,8 @@ from langchain_core.documents import Document
 from langchain_core.tools import BaseTool
 from langchain_core.vectorstores import InMemoryVectorStore
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetQueryInput(BaseModel):
@@ -368,7 +371,7 @@ Now translate this question:
             
         except Exception as e:
             # If vector search fails, fall back to simple truncation
-            print(f"Vector search failed: {e}, falling back to truncation")
+            logger.warning("Vector search failed: %s, falling back to truncation", e)
             return [{columns[i]: row[i] for i in range(len(columns))} for row in rows[:top_k]]
     
     def _execute_sql(self, conn: sqlite3.Connection, sql: str, natural_query: str = "") -> Dict[str, Any]:
