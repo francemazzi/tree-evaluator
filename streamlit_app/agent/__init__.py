@@ -6,8 +6,9 @@ from streamlit_app.agent.core import TreeEvaluatorAgent
 from streamlit_app.agent.extraction import DataExtractor
 from streamlit_app.agent.formatting import ItalianNumberFormatter
 from streamlit_app.agent.response_builder import ResponseBuilder
+from streamlit_app.agent.failure_tracker_adapter import FailureTrackerAdapter
 from streamlit_app.agent.state import AgentState, DATASET_PRESETS
-from streamlit_app.agent.tool_guard import ToolLoopManager
+from streamlit_app.agent.tool_guard import ToolLoopManager  # kept for backward compat
 
 __all__ = [
     "TreeEvaluatorAgent",
@@ -17,6 +18,7 @@ __all__ = [
     "DATASET_PRESETS",
     "ConversationContextManager",
     "DataExtractor",
+    "FailureTrackerAdapter",
     "ItalianNumberFormatter",
     "ResponseBuilder",
     "ToolLoopManager",

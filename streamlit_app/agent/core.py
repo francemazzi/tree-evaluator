@@ -13,6 +13,7 @@ The agent is built on LangGraph and uses modular components:
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -29,8 +30,10 @@ from streamlit_app.agent.prompts import SystemPrompts
 from streamlit_app.agent.query_optimizer import QueryOptimizer
 from streamlit_app.agent.state import AgentState
 from streamlit_app.agent.streaming_handler import StreamingHandler
-from streamlit_app.agent.tool_guard import ToolLoopManager
+from streamlit_app.agent.failure_tracker_adapter import FailureTrackerAdapter
+from streamlit_app.agent.memory import PersistentMemory
 from streamlit_app.agent.tool_initializer import ToolInitializer
+from streamlit_app.agent.transcript import SessionTranscript
 from streamlit_app.llm.factory import LlmFactory, LlmProvider, LlmSettings, LlmSettingsReader
 
 # Load environment variables
@@ -56,6 +59,7 @@ class TreeEvaluatorAgent:
         data_description: str = "",
         dataset_preset: str = "vienna",
         interface_language: str = "it",
+        session_id: Optional[str] = None,
     ) -> None:
         """Initialize the agent with tools and LLM.
 
@@ -95,6 +99,11 @@ class TreeEvaluatorAgent:
         # Store interface language
         self._interface_language = interface_language if interface_language in ["it", "en"] else "it"
 
+        # Session tracking, transcript logging, and persistent memory
+        self._session_id = session_id or uuid.uuid4().hex[:12]
+        self._transcript = SessionTranscript(self._session_id)
+        self._memory = PersistentMemory(self._session_id)
+
         # Initialize tools using ToolInitializer
         tool_initializer = ToolInitializer(
             base_llm=self._base_llm,
@@ -114,7 +123,7 @@ class TreeEvaluatorAgent:
         self._context_manager = ConversationContextManager(self._embeddings)
         self._extractor = DataExtractor()
         self._formatter = ItalianNumberFormatter()
-        self._tool_loop_manager = ToolLoopManager()
+        self._tool_loop_manager = FailureTrackerAdapter()
 
         # Initialize handlers
         self._query_optimizer = QueryOptimizer(
@@ -166,9 +175,12 @@ class TreeEvaluatorAgent:
         # Prepare messages with system prompt
         messages = self._prepare_messages_for_llm(messages, detected_language)
 
+        self._transcript.log_llm_call(self._primary_model, len(messages))
         try:
             response = self._llm.invoke(messages)
+            self._transcript.log_llm_response(self._primary_model)
         except Exception as e:
+            self._transcript.log_error("llm_call", str(e))
             response = self._handle_llm_error(e, messages, detected_language)
 
         return {"messages": [response]}
@@ -180,6 +192,9 @@ class TreeEvaluatorAgent:
         # Remove existing system messages and add fresh one
         messages = [m for m in messages if not isinstance(m, SystemMessage)]
         system_prompt = SystemPrompts.get_system_prompt(language)
+        memory_section = self._memory.get_memory_for_prompt(max_chars=2000)
+        if memory_section:
+            system_prompt = system_prompt + "\n\n" + memory_section
         system_msg = SystemMessage(content=system_prompt)
         messages = [system_msg] + list(messages)
 
@@ -272,18 +287,29 @@ class TreeEvaluatorAgent:
     def _guard_tool_loop(self, state: AgentState) -> dict:
         """Guard against tool call loops."""
         messages = state.get("messages") or []
-        return self._tool_loop_manager.check_for_loops(messages, state)
+        result = self._tool_loop_manager.check_for_loops(messages, state)
+        if result.get("tool_loop_detected"):
+            details = result.get("tool_loop_details") or {}
+            self._transcript.log_loop_detected(
+                tool_name=details.get("tool_name", "unknown"),
+                reason=str(details.get("reason", "")),
+                call_count=details.get("call_count", 0),
+                action=result.get("tool_loop_action", "continue"),
+            )
+        return result
 
     def _replan_after_tool_loop(self, state: AgentState) -> dict:
         """Recover from repeated tool calls by asking the agent to self-reflect."""
         messages = state.get("messages") or []
         replan_msg = self._tool_loop_manager.create_replan_prompt(state, messages)
+        replan_count = int(state.get("tool_loop_replan_count") or 0) + 1
+        self._transcript.log_replan("tool_loop", replan_count)
 
         return {
             "messages": [replan_msg],
             "tool_loop_action": "continue",
             "tool_loop_detected": False,
-            "tool_loop_replan_count": int(state.get("tool_loop_replan_count") or 0) + 1,
+            "tool_loop_replan_count": replan_count,
         }
 
     def _validate_response(self, state: AgentState) -> dict:
@@ -309,15 +335,16 @@ class TreeEvaluatorAgent:
         """
         messages = self._convert_history_to_messages(history)
         messages.append(HumanMessage(content=message))
+        self._transcript.log_user_message(message)
 
         initial_state = self._create_initial_state(messages)
         result = self._graph.invoke(initial_state, config={"recursion_limit": 30})
 
         final_message = result["messages"][-1]
-        if isinstance(final_message, AIMessage):
-            return final_message.content
-
-        return str(final_message.content)
+        response_text = final_message.content if isinstance(final_message, AIMessage) else str(final_message.content)
+        self._transcript.log_agent_response(response_text[:300] if response_text else "")
+        self._save_response_facts(response_text)
+        return response_text
 
     def stream_chat(self, message: str, history: Optional[List[dict]] = None):
         """Stream chat response with LangGraph streaming.
@@ -331,6 +358,7 @@ class TreeEvaluatorAgent:
         """
         messages = self._convert_history_to_messages(history)
         messages.append(HumanMessage(content=message))
+        self._transcript.log_user_message(message)
 
         final_response = None
         retry_count = 0
@@ -372,13 +400,34 @@ class TreeEvaluatorAgent:
 
         # Yield final response
         if final_response:
+            self._transcript.log_agent_response(final_response[:300])
+
             if chart_data_json and "CHART_DATA_START" not in final_response:
                 final_response = f"{final_response}\n\nCHART_DATA_START\n{chart_data_json}\nCHART_DATA_END"
 
             if map_data_json and "MAP_DATA_START" not in final_response:
                 final_response = f"{final_response}\n\nMAP_DATA_START\n{map_data_json}\nMAP_DATA_END"
 
+            self._save_response_facts(final_response)
             yield {"type": "response", "content": final_response}
+
+    def _save_response_facts(self, response_text: str) -> None:
+        """Extract key facts from agent response and save to persistent memory."""
+        if not response_text:
+            return
+        try:
+            key_facts = self._extractor.extract_key_facts(
+                [AIMessage(content=response_text)]
+            )
+            for fact in key_facts[:3]:
+                self._memory.save_fact(fact, category="result")
+        except Exception:
+            pass  # Memory saving is best-effort
+
+    @property
+    def memory(self) -> PersistentMemory:
+        """Access persistent memory for this session."""
+        return self._memory
 
     def _process_stream_event(
         self, node_name: str, node_output: Any, language: str, msg_count: int
