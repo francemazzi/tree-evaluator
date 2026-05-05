@@ -144,12 +144,14 @@ class StreamingHandler:
         if tool_name == "query_tree_dataset":
             natural_q = tool_args.get("natural_query", "N/A")
             return f"  - **{get_translation('query', language)}**: _{natural_q}_\n"
-        elif tool_name in ("calculate_co2", "estimate_environment"):
+        elif tool_name in ("calculate_co2_sequestration", "calculate_environmental_estimates"):
             dbh = tool_args.get("dbh_cm", "N/A")
             height = tool_args.get("height_m", "N/A")
+            if tool_name == "calculate_environmental_estimates":
+                dbh = tool_args.get("diameter_cm", dbh)
             result = f"  - **{get_translation('dbh', language)}**: {dbh} cm\n  - **{get_translation('height', language)}**: {height} m\n"
-            if "wood_density" in tool_args:
-                result += f"  - **{get_translation('wood_density', language)}**: {tool_args['wood_density']} g/cm³\n"
+            if "wood_density_g_cm3" in tool_args:
+                result += f"  - **{get_translation('wood_density', language)}**: {tool_args['wood_density_g_cm3']} g/cm³\n"
             return result
         elif tool_name == "calculate_co2_aggregate":
             query = tool_args.get("natural_query", "N/A")
@@ -263,7 +265,7 @@ class StreamingHandler:
             column_name = result_data.get("column")
             output += f"**{column_name}**: {result_val}\n"
         
-        # CO2 results (single tree - calculate_co2)
+        # CO2 results (single tree - calculate_co2_sequestration)
         if "co2_sequestration_kg" in result_data:
             co2 = result_data.get("co2_sequestration_kg", 0)
             output += f"🌱 {get_translation('co2_sequestered', language)}: {co2} kg\n"
@@ -417,4 +419,3 @@ class StreamingHandler:
                     reasoning += f"\n{feedback}\n"
                 reasoning += f"\n{get_translation('reprocessing_response', language)}\n"
                 return {"type": "reasoning", "content": reasoning}, new_retry_count
-

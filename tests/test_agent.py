@@ -8,9 +8,15 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # Aggiungi root del progetto al path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
+
+
+def _running_under_pytest() -> bool:
+    return "PYTEST_CURRENT_TEST" in os.environ
 
 def test_agent():
     """Test inizializzazione e uso dell'agent."""
@@ -25,7 +31,9 @@ def test_agent():
         print("  1. export OPENAI_API_KEY=sk-your-key")
         print("  2. Crea file .env con OPENAI_API_KEY=sk-your-key")
         print("  3. Passa chiave come argomento: python test_agent.py sk-your-key")
-        if len(sys.argv) > 1:
+        if _running_under_pytest():
+            pytest.skip("OPENAI_API_KEY not set; skipping real agent smoke test")
+        elif len(sys.argv) > 1:
             api_key = sys.argv[1]
             print(f"\n✅ Usando chiave da argomento: {api_key[:10]}...")
         else:
@@ -44,7 +52,10 @@ def test_agent():
     except ImportError as e:
         print(f"❌ Dipendenza mancante: {e}")
         print("Installa: pip install -r requirements.txt")
-        sys.exit(1)
+        if _running_under_pytest():
+            pytest.fail(f"Dipendenza mancante: {e}")
+        else:
+            sys.exit(1)
     
     # 3. Check dataset
     print("\n📁 Check dataset...")
@@ -69,7 +80,10 @@ def test_agent():
         print(f"❌ Errore inizializzazione: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        if _running_under_pytest():
+            pytest.fail(f"Errore inizializzazione agent: {e}")
+        else:
+            sys.exit(1)
     
     # 5. Test query semplice
     print("\n💬 Test query...")
@@ -111,4 +125,3 @@ def test_agent():
 
 if __name__ == "__main__":
     test_agent()
-

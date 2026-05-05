@@ -146,7 +146,7 @@ class ResponseBuilder:
             "query_tree_dataset": "interrogazione del dataset",
             "calculate_co2_sequestration": "calcolo del sequestro di CO2",
             "calculate_co2_aggregate": "calcolo aggregato CO2 (dataset)",
-            "estimate_environment": "stima ambientale",
+            "calculate_environmental_estimates": "stima ambientale",
             "generate_chart": "generazione di grafici",
             "generate_map": "generazione di mappe",
             "query_species_list": "ricerca nella lista delle specie",
@@ -245,4 +245,3 @@ class ResponseBuilder:
         )
         
         return fallback_response
-

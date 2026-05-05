@@ -1,5 +1,6 @@
 .venv
 .pytest_cache
+.deepeval_telemetry.txt
 __pycache__
 *.pyc
 *.pyo

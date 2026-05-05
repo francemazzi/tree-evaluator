@@ -23,6 +23,18 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000` and the docs at `http://localhost:8000/docs`.
 
+### Tests
+
+Runtime tests use the standard dependencies; agent/tool contract tests use DeepEval from `requirements-dev.txt`.
+
+```bash
+pip install -r requirements-dev.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_deepeval_tool_contracts.py
+```
+
+DeepEval tests are deterministic by default and do not call an LLM judge. The optional real agent smoke test is skipped unless both `RUN_DEEPEVAL_AGENT_E2E=1` and `OPENAI_API_KEY` are set.
+
 ### Docker
 
 Build and run all services (API + Streamlit):

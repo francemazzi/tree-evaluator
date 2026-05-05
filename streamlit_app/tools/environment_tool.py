@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import sys
 from pathlib import Path
 from typing import Optional, Type
+from uuid import uuid4
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -14,7 +16,13 @@ app_dir = Path(__file__).parent.parent.parent / "app"
 if str(app_dir) not in sys.path:
     sys.path.insert(0, str(app_dir.parent))
 
-from app.models.environment import EnvironmentalEstimatesRequest, TreeInput
+from app.models.environment import (
+    EnvironmentalEstimatesRequest,
+    MetaInput,
+    MethodInput,
+    SiteInput,
+    TreeInput,
+)
 from app.services.environment_service import EnvironmentalEstimationService
 
 
@@ -69,12 +77,14 @@ class EnvironmentEstimationTool(BaseTool):
     ) -> dict:
         """Execute the environmental estimation."""
         request = EnvironmentalEstimatesRequest(
-            tree=TreeInput(
-                diameter_cm=diameter_cm,
-                height_m=height_m,
-                carbon_fraction=carbon_fraction,
-            )
+            tree=TreeInput(diameter_cm=diameter_cm, height_m=height_m, carbon_fraction=carbon_fraction),
+            site=SiteInput(site_id="tool-default"),
+            method=MethodInput(),
+            meta=MetaInput(
+                request_id=f"tool-{uuid4().hex}",
+                timestamp=datetime.now(timezone.utc),
+                source="ui",
+            ),
         )
         response = self._service.computeEnvironmentalEstimates(request)
         return response.model_dump()
-

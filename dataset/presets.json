@@ -23,7 +23,7 @@
   },
   "_static_tools": [
     {
-      "name": "calculate_co2",
+      "name": "calculate_co2_sequestration",
       "description": {"it": "Calcola sequestro CO2 per singoli alberi", "en": "Calculate CO2 sequestration for individual trees"},
       "keywords": ["co2", "carbonio", "carbon", "sequestro", "sequestration", "singolo", "single"]
     },
@@ -33,17 +33,17 @@
       "keywords": ["co2", "carbonio", "carbon", "totale", "total", "media", "average", "tutti", "all", "aggregato", "aggregate"]
     },
     {
-      "name": "get_carbon_content",
+      "name": "lookup_carbon_content",
       "description": {"it": "Ottiene frazione di carbonio per specie", "en": "Get carbon fraction by species"},
       "keywords": ["carbonio", "carbon", "contenuto", "content", "frazione", "fraction"]
     },
     {
-      "name": "environment_estimation",
+      "name": "calculate_environmental_estimates",
       "description": {"it": "Calcola volume, biomassa con formule alternative", "en": "Compute volume, biomass using alternative formulas"},
       "keywords": ["ambiente", "environment", "stima", "estimation"]
     },
     {
-      "name": "query_dataset",
+      "name": "query_tree_dataset",
       "description": {"it": "Query dataset alberi Vienna/Milano con SQL", "en": "Query Vienna/Milano tree datasets with SQL"},
       "keywords": ["dataset", "alberi", "trees", "quanti", "count", "specie", "species", "query", "cerca", "search", "trova", "find"]
     },
@@ -118,7 +118,7 @@
       "keywords": ["biomassa", "biomass", "totale", "total"]
     },
     {
-      "name": "search_papers",
+      "name": "search_scientific_papers",
       "description": {"it": "Cerca paper scientifici su arXiv/PubMed", "en": "Search scientific papers on arXiv/PubMed"},
       "keywords": ["paper", "articoli", "articles", "ricerca", "research", "scientifici", "scientific", "pubmed", "arxiv"]
     },
