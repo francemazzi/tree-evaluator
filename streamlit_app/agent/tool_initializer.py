@@ -108,7 +108,12 @@ class ToolInitializer:
         co2_aggregate_tool = self._create_co2_aggregate_tool(
             custom_db_path, custom_table_name, dataset_preset, project_root
         )
-        map_tool = self._create_map_tool(custom_db_path, custom_table_name, dataset_preset)
+        chart_tool = self._create_chart_tool(
+            custom_db_path, custom_table_name, dataset_preset, project_root
+        )
+        map_tool = self._create_map_tool(
+            custom_db_path, custom_table_name, dataset_preset, project_root
+        )
 
         # Static tools list
         static_tools = [
@@ -118,7 +123,7 @@ class ToolInitializer:
             EnvironmentEstimationTool(),
             dataset_tool,
             species_list_tool,
-            ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm),
+            chart_tool,
             map_tool,
             HeyerVolumeTool(),
             GeneralVolumeTool(),
@@ -222,11 +227,39 @@ class ToolInitializer:
             llm=self._base_llm,
         )
 
+    def _create_chart_tool(
+        self,
+        custom_db_path: Optional[Path],
+        custom_table_name: Optional[str],
+        dataset_preset: str,
+        project_root: Path,
+    ) -> ChartGenerationTool:
+        """Create and configure the ChartGenerationTool for the selected dataset."""
+        if custom_db_path and custom_table_name:
+            return ChartGenerationTool(
+                db_path=custom_db_path,
+                table_name=custom_table_name,
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+            )
+
+        if dataset_preset in DATASET_PRESETS:
+            preset = DATASET_PRESETS[dataset_preset]
+            return ChartGenerationTool(
+                db_path=project_root / preset["db_path"],
+                table_name=preset["table_name"],
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+            )
+
+        return ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
+
     def _create_map_tool(
         self,
         custom_db_path: Optional[Path],
         custom_table_name: Optional[str],
         dataset_preset: str,
+        project_root: Path,
     ) -> MapGenerationTool:
         """Create and configure the MapGenerationTool."""
         if custom_db_path and custom_table_name:
@@ -237,7 +270,15 @@ class ToolInitializer:
                 fallback_llm=self._fallback_llm,
             )
 
-        # Both milano and vienna use the same default configuration
+        if dataset_preset in DATASET_PRESETS:
+            preset = DATASET_PRESETS[dataset_preset]
+            return MapGenerationTool(
+                db_path=project_root / preset["db_path"],
+                table_name=preset["table_name"],
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+            )
+
         return MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
 
     def _load_dynamic_tools(self) -> List[Any]:

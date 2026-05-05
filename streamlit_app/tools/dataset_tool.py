@@ -168,13 +168,17 @@ class DatasetQueryTool(BaseTool):
             )
         
         conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA query_only = ON")
         conn.row_factory = sqlite3.Row
         return conn
     
     def _get_schema_info(self, conn: sqlite3.Connection) -> str:
         """Get database schema information."""
         cursor = conn.cursor()
-        cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{self._table_name}'")
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (self._table_name,),
+        )
         schema = cursor.fetchone()
         return schema[0] if schema else "Schema not found"
     
@@ -373,6 +377,45 @@ Now translate this question:
             # If vector search fails, fall back to simple truncation
             logger.warning("Vector search failed: %s, falling back to truncation", e)
             return [{columns[i]: row[i] for i in range(len(columns))} for row in rows[:top_k]]
+
+    def _format_result_row(
+        self,
+        columns: List[str],
+        row: tuple,
+        natural_query: str = "",
+    ) -> Dict[str, Any]:
+        """Format a SQLite row and add stable aliases for common aggregate outputs."""
+        result_dict = {col: row[i] for i, col in enumerate(columns)}
+
+        for key, value in list(result_dict.items()):
+            lower_key = key.lower()
+            if lower_key not in result_dict:
+                result_dict[lower_key] = value
+
+        query_lower = natural_query.lower()
+        if "totale" in query_lower and "totale" not in result_dict:
+            lowered_keys = {key.lower(): key for key in result_dict}
+            for candidate in (
+                "total",
+                "total_sales",
+                "total_vendite",
+                "totale_vendite",
+                "sum_vendite",
+                "sum(vendite)",
+            ):
+                source_key = lowered_keys.get(candidate)
+                if source_key is not None:
+                    result_dict["totale"] = result_dict[source_key]
+                    break
+
+        if "totale" in query_lower and "totale" not in result_dict and len(columns) == 2:
+            group_column = columns[0].lower()
+            for key, value in result_dict.items():
+                if key.lower() != group_column and isinstance(value, (int, float)):
+                    result_dict["totale"] = value
+                    break
+
+        return result_dict
     
     def _execute_sql(self, conn: sqlite3.Connection, sql: str, natural_query: str = "") -> Dict[str, Any]:
         """Execute SQL query and format results."""
@@ -412,9 +455,7 @@ Now translate this question:
                     # Direct return for small result sets
                     results = []
                     for row in rows:
-                        result_dict = {}
-                        for i, col in enumerate(columns):
-                            result_dict[col] = row[i]
+                        result_dict = self._format_result_row(columns, row, natural_query)
                         results.append(result_dict)
                     
                     return {
@@ -502,4 +543,3 @@ Now translate this question:
                 "error": f"Error processing query: {str(e)}",
                 "natural_query": natural_query
             }
-

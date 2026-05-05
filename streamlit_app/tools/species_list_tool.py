@@ -10,6 +10,8 @@ from langchain_core.tools import BaseTool
 from langchain_core.vectorstores import InMemoryVectorStore
 from pydantic import BaseModel, Field
 
+from streamlit_app.tools.sql_validator import SQLValidator
+
 
 class SpeciesListQueryInput(BaseModel):
     """Input schema for species list query tool."""
@@ -89,12 +91,16 @@ Always ask for a smaller subset (LIMIT) if returning many rows.
                 f"Run 'python dataset/init_species_list_db.py --force' to create it."
             )
         conn = sqlite3.connect(self._db_path.as_posix())
+        conn.execute("PRAGMA query_only = ON")
         conn.row_factory = sqlite3.Row
         return conn
 
     def _get_schema_info(self, conn: sqlite3.Connection) -> str:
         cursor = conn.cursor()
-        cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{self._table_name}'")
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (self._table_name,),
+        )
         schema = cursor.fetchone()
         return schema[0] if schema else "Schema not found"
 
@@ -218,7 +224,18 @@ Now translate this question:
             conn = self._get_connection()
             schema_info = self._get_schema_info(conn)
             sql = self._translate_to_sql(natural_query, schema_info)
-            result = self._execute_sql(conn, sql, natural_query=natural_query)
+            validator = SQLValidator(allowed_tables=[self._table_name], default_limit=50)
+            is_valid, sanitized_sql, error_msg = validator.validate(sql)
+            if not is_valid:
+                conn.close()
+                return {
+                    "error": f"SQL validation failed: {error_msg}",
+                    "sql_attempted": sql,
+                    "natural_query": natural_query,
+                    "hint": "Please rephrase your question to request species-list data retrieval only.",
+                }
+
+            result = self._execute_sql(conn, sanitized_sql, natural_query=natural_query)
             conn.close()
             result["natural_query"] = natural_query
             return result
@@ -228,5 +245,3 @@ Now translate this question:
             return {"error": f"SQL execution error: {str(e)}", "natural_query": natural_query}
         except Exception as e:
             return {"error": f"Error processing query: {str(e)}", "natural_query": natural_query}
-
-

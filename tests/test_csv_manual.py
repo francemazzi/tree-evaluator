@@ -16,6 +16,8 @@ from streamlit_app.tools.dataset_tool import DatasetQueryTool
 import sqlite3
 
 
+__test__ = False
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -325,4 +327,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

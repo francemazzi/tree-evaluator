@@ -128,7 +128,10 @@ class DynamicDataManager:
         cursor = conn.cursor()
         
         try:
-            cursor.execute(f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}'")
+            cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                (table_name,),
+            )
             schema = cursor.fetchone()
             return schema[0] if schema else "Schema not found"
         finally:
@@ -154,4 +157,3 @@ class DynamicDataManager:
                 file_path.unlink()
             except Exception:
                 pass  # Ignore errors during cleanup
-

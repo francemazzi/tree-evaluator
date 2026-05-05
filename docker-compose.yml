@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   # Optional: run Ollama inside Docker (disabled by default).
   # Enable with: docker compose --profile with-ollama up
@@ -27,6 +26,8 @@ services:
       - "8000:8000"
     volumes:
       - ./app:/app/app:ro
+      - ./streamlit_app:/app/streamlit_app:ro
+      - ./dataset:/app/dataset:ro
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
   streamlit:

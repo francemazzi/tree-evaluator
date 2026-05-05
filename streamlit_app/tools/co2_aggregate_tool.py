@@ -22,6 +22,7 @@ from streamlit_app.constants import (
     SOFTWOOD_GENERA,
     VIENNA_HEIGHT_MAP,
 )
+from streamlit_app.tools.sql_validator import SQLValidator
 
 
 class CO2AggregateInput(BaseModel):
@@ -178,7 +179,9 @@ class CO2AggregateTool(BaseTool):
     def _get_connection(self) -> sqlite3.Connection:
         if not self._db_path.exists():
             raise FileNotFoundError(f"Database not found at {self._db_path}")
-        return sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA query_only = ON")
+        return conn
 
     def _generate_sql_query(self, natural_query: str) -> str:
         """Generate a SELECT * query based on the natural language filter."""
@@ -322,15 +325,28 @@ class CO2AggregateTool(BaseTool):
             
             # Generate SQL
             sql = self._generate_sql_query(natural_query)
+
+            validator = SQLValidator(
+                allowed_tables=[self._table_name],
+                require_limit=False,
+            )
+            is_valid, sanitized_sql, error_msg = validator.validate(sql)
+            if not is_valid:
+                conn.close()
+                return {
+                    "error": f"SQL validation failed: {error_msg}",
+                    "sql_attempted": sql,
+                    "natural_query": natural_query,
+                }
             
             # Execute and load into Pandas
-            df = pd.read_sql_query(sql, conn)
+            df = pd.read_sql_query(sanitized_sql, conn)
             conn.close()
             
             if df.empty:
                 return {
                     "result": "Nessun albero trovato con questa query.",
-                    "sql_executed": sql,
+                    "sql_executed": sanitized_sql,
                     "count": 0
                 }
             
@@ -394,7 +410,7 @@ Tool utilizzati: calculate_co2_aggregate"""
             
             return {
                 "natural_query": natural_query,
-                "sql_executed": sql,
+                "sql_executed": sanitized_sql,
                 "tree_count": count,
                 "dominant_species": dominant_species,
                 "carbon_stock_t": round(total_carbon, 2),
@@ -434,4 +450,3 @@ Tool utilizzati: calculate_co2_aggregate"""
 
         except Exception as e:
             return {"error": str(e)}
-

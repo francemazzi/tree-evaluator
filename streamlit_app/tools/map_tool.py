@@ -10,6 +10,8 @@ from folium.plugins import HeatMap, MarkerCluster
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.tools.sql_validator import SQLValidator, quote_sql_identifier
+
 
 class MapGenerationInput(BaseModel):
     """Input schema for map generation tool."""
@@ -121,13 +123,25 @@ class MapGenerationTool(BaseTool):
             )
         
         conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA query_only = ON")
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _get_schema_info(self, conn: sqlite3.Connection) -> str:
+        """Get database schema information for the configured table."""
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (self._table_name,),
+        )
+        schema = cursor.fetchone()
+        return schema[0] if schema else f"Table: {self._table_name}"
 
     def _translate_to_map_sql(
         self, 
         data_query: str, 
-        max_points: int
+        max_points: int,
+        schema_info: str,
     ) -> Dict[str, Any]:
         """Translate natural language data query to SQL for map visualization."""
         from datetime import datetime
@@ -138,18 +152,17 @@ class MapGenerationTool(BaseTool):
         prompt = f"""You are a SQL expert for map visualization. Generate a SQL query to get tree locations for a map.
 
 DATABASE SCHEMA:
-Table: {self._table_name}
-Columns: _id, district, genere, specie, varieta, genus_species, trunk_diameter_cm, crown_diameter_m, height_m, street, plant_year, longitude, latitude
+{schema_info}
 
 IMPORTANT:
 1. Current year is {current_year}
-2. ALWAYS select {self._lat_column} and {self._lon_column} columns - these are REQUIRED for the map
-3. Filter out NULL coordinates: WHERE {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL
-4. Limit results to {max_points} points maximum
-5. For species searches, use LIKE with % wildcards (case-insensitive)
-6. Common genus keywords: Acer (acero), Tilia (tiglio), Quercus (quercia), Fraxinus (frassino), Prunus
-7. The column 'genere' contains genus (e.g., 'Tilia', 'Acer'), 'specie' contains species name
-8. For filtering, prefer using 'genere' column for genus and 'genus_species' for full name
+2. Table name is: {self._table_name}
+3. ALWAYS select {self._lat_column} and {self._lon_column} columns - these are REQUIRED for the map
+4. Filter out NULL coordinates: WHERE {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL
+5. Limit results to {max_points} points maximum
+6. For species searches, use LIKE with % wildcards (case-insensitive)
+7. Use only columns that appear in the schema above.
+8. Use ONLY the table {self._table_name}; do not reference other tables.
 
 USER REQUEST: {data_query}
 
@@ -168,7 +181,7 @@ Examples:
 Request: "Mostra i tigli sulla mappa"
 Response:
 {{
-    "sql": "SELECT {self._lat_column}, {self._lon_column}, genere, specie, genus_species, trunk_diameter_cm, street FROM {self._table_name} WHERE genere LIKE '%Tilia%' AND {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
+    "sql": "SELECT {self._lat_column}, {self._lon_column}, genus_species, trunk_diameter_cm, street FROM {self._table_name} WHERE genus_species LIKE '%Tilia%' AND {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
     "suggested_title": "Distribuzione dei Tigli (Tilia) a Milano",
     "popup_columns": ["genus_species", "trunk_diameter_cm", "street"],
     "center_lat": 45.4642,
@@ -179,7 +192,7 @@ Response:
 Request: "Alberi del municipio 3"
 Response:
 {{
-    "sql": "SELECT {self._lat_column}, {self._lon_column}, genere, specie, genus_species, trunk_diameter_cm, street FROM {self._table_name} WHERE district = 3 AND {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
+    "sql": "SELECT {self._lat_column}, {self._lon_column}, genus_species, trunk_diameter_cm, street FROM {self._table_name} WHERE district = 3 AND {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
     "suggested_title": "Alberi del Municipio 3 di Milano",
     "popup_columns": ["genus_species", "trunk_diameter_cm", "street"],
     "center_lat": 45.48,
@@ -190,7 +203,7 @@ Response:
 Request: "Distribuzione degli alberi"
 Response:
 {{
-    "sql": "SELECT {self._lat_column}, {self._lon_column}, genere, specie FROM {self._table_name} WHERE {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
+    "sql": "SELECT {self._lat_column}, {self._lon_column}, genus_species FROM {self._table_name} WHERE {self._lat_column} IS NOT NULL AND {self._lon_column} IS NOT NULL LIMIT {max_points}",
     "suggested_title": "Distribuzione degli Alberi a Milano",
     "popup_columns": ["genere", "specie"],
     "center_lat": 45.4642,
@@ -224,6 +237,9 @@ Now generate the query for: {data_query}"""
             response_text = response_text.split('```json')[1].split('```')[0].strip()
         elif response_text.startswith('```'):
             response_text = response_text.split('```')[1].split('```')[0].strip()
+
+        if "{" in response_text:
+            response_text = response_text[response_text.index("{"):response_text.rindex("}") + 1]
         
         return json.loads(response_text)
 
@@ -371,13 +387,16 @@ Now generate the query for: {data_query}"""
         try:
             # Check if database has coordinates
             conn = self._get_connection()
+            schema_info = self._get_schema_info(conn)
             
             # Verify coordinate columns exist
             cursor = conn.cursor()
-            cursor.execute(f"PRAGMA table_info({self._table_name})")
+            table_identifier = quote_sql_identifier(self._table_name)
+            cursor.execute(f"PRAGMA table_info({table_identifier})")
             columns = [row[1] for row in cursor.fetchall()]
             
             if self._lat_column not in columns or self._lon_column not in columns:
+                conn.close()
                 return {
                     "success": False,
                     "error": f"Il dataset selezionato non contiene coordinate GPS ({self._lat_column}, {self._lon_column}). "
@@ -385,7 +404,8 @@ Now generate the query for: {data_query}"""
                 }
             
             # Translate natural language to SQL
-            query_info = self._translate_to_map_sql(data_query, max_points or 5000)
+            effective_max_points = min(max_points or 5000, 5000)
+            query_info = self._translate_to_map_sql(data_query, effective_max_points, schema_info)
             
             sql = query_info["sql"]
             popup_columns = query_info.get("popup_columns", ["genus_species"])
@@ -395,16 +415,30 @@ Now generate the query for: {data_query}"""
             
             # Use custom title or fall back to suggestion
             final_title = title or query_info["suggested_title"]
+
+            validator = SQLValidator(
+                allowed_tables=[self._table_name],
+                default_limit=effective_max_points,
+            )
+            is_valid, sanitized_sql, error_msg = validator.validate(sql)
+            if not is_valid:
+                conn.close()
+                return {
+                    "success": False,
+                    "error": f"SQL validation failed: {error_msg}",
+                    "sql_attempted": sql,
+                    "data_query": data_query,
+                }
             
             # Execute query
-            data = self._execute_query(conn, sql)
+            data = self._execute_query(conn, sanitized_sql)
             conn.close()
             
             if not data:
                 return {
                     "success": False,
                     "error": "Nessun dato trovato per la query specificata",
-                    "sql_executed": sql
+                    "sql_executed": sanitized_sql
                 }
             
             # Create map
@@ -427,7 +461,7 @@ Now generate the query for: {data_query}"""
                 "map_html": map_html,
                 "map_type": map_type,
                 "data_points": len(data),
-                "sql_executed": sql,
+                "sql_executed": sanitized_sql,
                 "title": final_title,
                 "center": {"lat": center_lat, "lon": center_lon},
                 "zoom": zoom,
@@ -441,4 +475,3 @@ Now generate the query for: {data_query}"""
                 "success": False,
                 "error": f"Errore nella generazione della mappa: {str(e)}"
             }
-

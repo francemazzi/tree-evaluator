@@ -16,10 +16,14 @@ import tempfile
 
 import pandas as pd
 import pytest
+from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
 from streamlit_app.services.data_manager import DynamicDataManager
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
+
+
+load_dotenv()
 
 
 class FakeUploadedFile:
@@ -131,5 +135,4 @@ def test_llm_group_by_regione(sample_csv_path: Path, df_expected: pd.DataFrame):
         obtained = {row["regione"]: row["totale"] for row in rows if "regione" in row and "totale" in row}
 
         assert obtained == expected_by_region, f"Atteso {expected_by_region}, ottenuto {obtained}"
-
 

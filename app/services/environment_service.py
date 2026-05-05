@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Protocol, Tuple
 
 from pydantic import ValidationError
@@ -105,7 +105,7 @@ class EnvironmentalEstimationService:
                     "bef": None if bef_value is None else round(bef_value, 6),
                 },
                 "rd": None if rd_value is None else round(rd_value, 6),
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             try:
                 logged, log_id = self._logger.log(log_payload)
@@ -217,5 +217,4 @@ class EnvironmentalEstimationService:
         # In absence of additional inputs (e.g., stand-level or stem/volume specifics),
         # return null with an explanatory note.
         return None, "BEF not computed due to insufficient input for mode '" + mode + "'"
-
 
