@@ -4,7 +4,18 @@ on:
   push:
     branches: [main, master]
   pull_request:
+  schedule:
+    - cron: "0 4 * * 1"
   workflow_dispatch:
+    inputs:
+      run_agent_e2e:
+        description: "Run real LLM agent E2E evaluations"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 jobs:
   pytest:
@@ -34,3 +45,40 @@ jobs:
           PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
           RUN_DEEPEVAL_AGENT_E2E: "0"
         run: python -m pytest -q
+
+  agent-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_agent_e2e == 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Run real agent E2E evals
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+          RUN_DEEPEVAL_AGENT_E2E: "1"
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::notice::OPENAI_API_KEY secret not configured; skipping real agent E2E evals."
+            exit 0
+          fi
+          python -m pytest -q \
+            tests/test_deepeval_tool_contracts.py::test_deepeval_agent_e2e_smoke_optional \
+            tests/test_ground_truth_agent.py::test_tree_evaluator_agent_ground_truth

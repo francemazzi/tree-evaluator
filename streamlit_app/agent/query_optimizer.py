@@ -273,9 +273,9 @@ REGOLE:
                         tools.append(tool_info["name"])
                         break
 
-        # Default to dataset query if no specific match
+        # Default to the main tree dataset query if no specific match
         if not tools:
-            tools.append("query_dataset")
+            tools.append("query_tree_dataset")
 
         reason_it = "Tool suggerito in base alla domanda"
         reason_en = "Suggested tool based on the query"

@@ -13,12 +13,14 @@ The agent is built on LangGraph and uses modular components:
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langgraph.prebuilt.tool_node import ToolNode
 
 from streamlit_app.agent.budget import AgentBudget
 from streamlit_app.agent.budget_handler import BudgetHandler, get_detected_language
@@ -118,6 +120,7 @@ class TreeEvaluatorAgent:
 
         # Initialize LLM with tools bound
         self._llm = self._base_llm.bind_tools(self._tools)
+        self._tool_node = ToolNode(self._tools)
 
         # Initialize utility classes
         self._context_manager = ConversationContextManager(self._embeddings)
@@ -142,8 +145,9 @@ class TreeEvaluatorAgent:
         self._graph = graph_builder.build(
             manage_context=self._manage_context,
             optimize_query=self._query_optimizer.optimize_query,
-            check_budget=self._budget_handler.check_budget,
+            check_budget=self._check_budget,
             call_model=self._call_model,
+            run_tools=self._run_tools,
             guard_tool_loop=self._guard_tool_loop,
             replan_after_tool_loop=self._replan_after_tool_loop,
             validate_response=self._validate_response,
@@ -184,6 +188,48 @@ class TreeEvaluatorAgent:
             response = self._handle_llm_error(e, messages, detected_language)
 
         return {"messages": [response]}
+
+    def _check_budget(self, state: AgentState) -> dict:
+        """Check budget and log budget stops to the session transcript."""
+        result = self._budget_handler.check_budget(state)
+        if result.get("budget_exceeded"):
+            self._transcript.log_budget_exceeded(result.get("budget_status", {}))
+        return result
+
+    def _run_tools(self, state: AgentState) -> dict:
+        """Run LangGraph tools while recording structured transcript events."""
+        pending_tool_calls = self._pending_tool_calls(state.get("messages") or [])
+        for tool_call in pending_tool_calls:
+            self._transcript.log_tool_call(
+                tool_call.get("name", "unknown"),
+                tool_call.get("args", {}),
+            )
+
+        started_at = time.monotonic()
+        try:
+            result = self._tool_node.invoke(state)
+        except Exception as exc:
+            for tool_call in pending_tool_calls:
+                self._transcript.log_error(tool_call.get("name", "unknown"), str(exc))
+            raise
+
+        duration_ms = (time.monotonic() - started_at) * 1000
+        for message in result.get("messages", []):
+            if isinstance(message, ToolMessage):
+                self._transcript.log_tool_result(
+                    getattr(message, "name", "unknown") or "unknown",
+                    message.content,
+                    duration_ms=duration_ms,
+                )
+        return result
+
+    @staticmethod
+    def _pending_tool_calls(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        """Return pending tool calls from the most recent AI message."""
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                return list(msg.tool_calls)
+        return []
 
     def _prepare_messages_for_llm(
         self, messages: List[BaseMessage], language: str

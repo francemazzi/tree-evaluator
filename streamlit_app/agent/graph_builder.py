@@ -6,7 +6,7 @@ including node definitions and edge routing logic.
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Literal, TYPE_CHECKING
+from typing import Any, Callable, List, Literal, Optional, TYPE_CHECKING
 
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, StateGraph
@@ -39,6 +39,7 @@ class GraphBuilder:
         replan_after_tool_loop: Callable[[AgentState], dict],
         validate_response: Callable[[AgentState], dict],
         increment_retry_count: Callable[[AgentState], dict],
+        run_tools: Optional[Callable[[AgentState], dict]] = None,
     ) -> StateGraph:
         """Build the LangGraph workflow with all nodes and edges.
 
@@ -51,6 +52,7 @@ class GraphBuilder:
             replan_after_tool_loop: Node function for replanning
             validate_response: Node function for response validation
             increment_retry_count: Node function for retry counting
+            run_tools: Optional replacement for LangGraph ToolNode, used for tracing
 
         Returns:
             Compiled StateGraph workflow
@@ -62,7 +64,7 @@ class GraphBuilder:
         workflow.add_node("query_optimizer", optimize_query)
         workflow.add_node("budget_check", check_budget)
         workflow.add_node("agent", call_model)
-        workflow.add_node("tools", ToolNode(self._tools))
+        workflow.add_node("tools", run_tools or ToolNode(self._tools))
         workflow.add_node("tool_loop_guard", guard_tool_loop)
         workflow.add_node("tool_loop_replanner", replan_after_tool_loop)
         workflow.add_node("validator", validate_response)

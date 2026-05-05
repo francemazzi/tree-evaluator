@@ -30,7 +30,14 @@ htmlcov/
 # Data
 data/
 chat_data/
-*.db
+dataset/*.sql
+dataset/*.db-shm
+dataset/*.db-wal
+dataset/BAUMKATOGD.csv
+dataset/dataset_milano.csv
+dataset/speciesList.csv
+*.sqlite
+*.sqlite3
 
 # Git
 .git/

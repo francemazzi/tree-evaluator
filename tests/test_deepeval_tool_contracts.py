@@ -239,6 +239,10 @@ def test_deepeval_keyword_router_returns_real_tool_names(query: str, expected_to
                 f"Expected {payload['expected_tool']} in {payload['matched_tools']}",
             ),
             lambda payload: (
+                payload["matched_tools"] and payload["matched_tools"][0] == payload["expected_tool"],
+                f"Expected {payload['expected_tool']} as first match, got {payload['matched_tools']}",
+            ),
+            lambda payload: (
                 not payload["unknown_tools"],
                 f"Router returned unknown tools: {payload['unknown_tools']}",
             ),

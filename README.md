@@ -35,6 +35,8 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q tests/test_deepeval_tool_co
 
 DeepEval tests are deterministic by default and do not call an LLM judge. The optional real agent smoke test is skipped unless both `RUN_DEEPEVAL_AGENT_E2E=1` and `OPENAI_API_KEY` are set.
 
+GitHub Actions runs the deterministic suite on push/PR. Real LLM agent E2E evaluations run only from the manual workflow option or the scheduled job, and are skipped automatically if the `OPENAI_API_KEY` secret is not configured.
+
 ### Docker
 
 Build and run all services (API + Streamlit):
