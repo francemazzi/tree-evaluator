@@ -86,6 +86,7 @@ class ToolInitializer:
         custom_table_name: Optional[str] = None,
         data_description: str = "",
         dataset_preset: str = "vienna",
+        dataset_column_roles: Optional[dict] = None,
     ) -> List[Any]:
         """Initialize all available tools for the agent.
 
@@ -94,11 +95,13 @@ class ToolInitializer:
             custom_table_name: Optional custom table name in the database
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
+            dataset_column_roles: Optional role hints inferred from uploaded dataset profiling
 
         Returns:
             List of initialized tool instances
         """
         project_root = get_project_root()
+        dataset_column_roles = dataset_column_roles or {}
 
         # Initialize dataset-specific tools
         dataset_tool = self._create_dataset_tool(
@@ -112,7 +115,7 @@ class ToolInitializer:
             custom_db_path, custom_table_name, dataset_preset, project_root
         )
         map_tool = self._create_map_tool(
-            custom_db_path, custom_table_name, dataset_preset, project_root
+            custom_db_path, custom_table_name, dataset_preset, project_root, dataset_column_roles
         )
 
         # Static tools list
@@ -260,12 +263,21 @@ class ToolInitializer:
         custom_table_name: Optional[str],
         dataset_preset: str,
         project_root: Path,
+        dataset_column_roles: Optional[dict] = None,
     ) -> MapGenerationTool:
         """Create and configure the MapGenerationTool."""
+        dataset_column_roles = dataset_column_roles or {}
+        latitude_candidates = dataset_column_roles.get("latitude_candidates") or []
+        longitude_candidates = dataset_column_roles.get("longitude_candidates") or []
+        lat_column = latitude_candidates[0] if latitude_candidates else "latitude"
+        lon_column = longitude_candidates[0] if longitude_candidates else "longitude"
+
         if custom_db_path and custom_table_name:
             return MapGenerationTool(
                 db_path=custom_db_path,
                 table_name=custom_table_name,
+                lat_column=lat_column,
+                lon_column=lon_column,
                 llm=self._base_llm,
                 fallback_llm=self._fallback_llm,
             )

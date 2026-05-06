@@ -15,7 +15,10 @@ class UserLlmSettings:
 
     user_id: str
     provider: str  # "openai" | "ollama"
+    openai_auth_method: str  # "api_key" | "codex_oauth"
     openai_api_key: str
+    openai_codex_oauth_token: str
+    anthropic_setup_token: str
     openai_chat_model: str
     openai_embedding_model: str
     ollama_base_url: str
@@ -28,8 +31,11 @@ class UserLlmSettings:
         return UserLlmSettings(
             user_id=user_id,
             provider="openai",
+            openai_auth_method="api_key",
             openai_api_key="",
-            openai_chat_model="gpt-5",
+            openai_codex_oauth_token="",
+            anthropic_setup_token="",
+            openai_chat_model="gpt-5.5",
             openai_embedding_model="text-embedding-3-small",
             ollama_base_url=OllamaBaseUrlResolver().resolve(),
             ollama_chat_model="qwen2.5:7b-instruct",
@@ -124,5 +130,4 @@ class ChatMessage:
             created_at=created_at,
             reasoning=row.get("reasoning"),
         )
-
 

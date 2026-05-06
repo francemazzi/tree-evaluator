@@ -1,4 +1,4 @@
-"""Structured session transcript — OpenClaw .jsonl pattern.
+"""Structured session transcript.
 
 Records every agent event (tool calls, LLM calls, errors, loop detections)
 as newline-delimited JSON (JSONL) in chat_data/ for debugging and analytics.

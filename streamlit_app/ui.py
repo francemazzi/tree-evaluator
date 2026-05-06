@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from typing import List, Optional, Tuple
 
@@ -16,26 +17,52 @@ from streamlit_app.service import ChatService
 class ChatUI:
     """Streamlit UI layer for the chat demo with conversation management."""
 
+    _OPENAI_AUTH_METHODS = {
+        "API key OpenAI Platform": "api_key",
+        "Login ChatGPT (OAuth)": "codex_oauth",
+    }
+    _OPENAI_API_KEYS_URL = "https://platform.openai.com/settings/organization/api-keys"
+    _OPENAI_CODEX_DEVICE_PAIRING_URL = "https://auth.openai.com/codex/device"
+    _CLAUDE_CODE_SETUP_URL = "https://docs.anthropic.com/en/docs/claude-code/setup"
+    _ANTHROPIC_CONSOLE_KEYS_URL = "https://console.anthropic.com/settings/keys"
+
     def __init__(self, service: ChatService) -> None:
         self._service = service
 
-    def _build_openai_chat_model_options(self, current: str) -> List[str]:
-        """Return OpenAI chat model options, ensuring the current selection is included."""
-        defaults = [
-            "gpt-5",
-            "gpt-5-mini",
-            "gpt-4o",
-            "gpt-4o-mini",
-            "o3-mini",
-            "o1",
-        ]
+    def _build_openai_chat_model_options(
+        self, current: str, *, for_codex_oauth: bool = False
+    ) -> List[str]:
+        """Return OpenAI chat model options, ensuring the current selection is included.
+
+        When ``for_codex_oauth`` is True only models accepted by the ChatGPT
+        backend are listed (see ``CODEX_OAUTH_SUPPORTED_MODELS``); platform-only
+        models like ``gpt-5`` or ``gpt-4o`` would otherwise return a 400
+        "unsupported-model" error.
+        """
+        if for_codex_oauth:
+            from streamlit_app.llm.codex_backend import CODEX_OAUTH_SUPPORTED_MODELS
+
+            defaults = list(CODEX_OAUTH_SUPPORTED_MODELS)
+        else:
+            defaults = [
+                "gpt-5.5",
+                "gpt-5.4",
+                "gpt-5.4-mini",
+                "gpt-5.3-codex",
+                "gpt-5.2-codex",
+                "gpt-5",
+                "gpt-5-mini",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "o3-mini",
+                "o1",
+            ]
         current_clean = (current or "").strip()
-        options = []
+        options: List[str] = []
         if current_clean and current_clean not in defaults:
             options.append(current_clean)
         options.extend(defaults)
         options.append("Altro…")
-        # Deduplicate preserving order
         seen = set()
         out: List[str] = []
         for m in options:
@@ -70,6 +97,13 @@ class ChatUI:
         if selected == "Altro…":
             return (custom_value or "").strip()
         return (selected or "").strip()
+
+    def _openai_auth_method_label(self, method: str) -> str:
+        """Return the UI label for a persisted OpenAI auth method."""
+        for label, value in self._OPENAI_AUTH_METHODS.items():
+            if value == method:
+                return label
+        return "API key OpenAI Platform"
 
     def _ensure_session(self) -> None:
         """Initialize session state variables."""
@@ -143,27 +177,148 @@ class ChatUI:
                 st.rerun()
 
             if provider == "openai":
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    new_api_key = st.text_input(
-                        "OpenAI API Key",
-                        value=settings.openai_api_key,
-                        type="password",
-                        key="api_key_input",
-                        help="Inserisci la tua chiave API OpenAI (sk-...). Verrà salvata in modo persistente.",
-                        placeholder="sk-..."
-                    )
-                with col2:
-                    st.write("")
-                    st.write("")
-                    if st.button("Salva", use_container_width=True):
-                        settings.openai_api_key = new_api_key.strip()
-                        self._service.save_user_llm_settings(settings)
-                        self._service._agent = None
-                        st.success("✅ Impostazioni salvate!")
-                        st.rerun()
+                auth_labels = list(self._OPENAI_AUTH_METHODS.keys())
+                current_auth_label = self._openai_auth_method_label(settings.openai_auth_method)
+                selected_auth_label = st.radio(
+                    "Metodo autenticazione OpenAI",
+                    options=auth_labels,
+                    index=auth_labels.index(current_auth_label),
+                    help=(
+                        "Puoi usare una API key della piattaforma OpenAI oppure un login ChatGPT OAuth "
+                        "con refresh token."
+                    ),
+                )
+                selected_auth_method = self._OPENAI_AUTH_METHODS[selected_auth_label]
+                if selected_auth_method != settings.openai_auth_method:
+                    settings.openai_auth_method = selected_auth_method
+                    self._service.save_user_llm_settings(settings)
+                    self._service._agent = None
+                    st.rerun()
 
-                chat_options = self._build_openai_chat_model_options(settings.openai_chat_model)
+                if settings.openai_auth_method == "api_key":
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        new_api_key = st.text_input(
+                            "OpenAI API Key",
+                            value=settings.openai_api_key,
+                            type="password",
+                            key="api_key_input",
+                            help="Inserisci la tua chiave API OpenAI (sk-...). Verrà salvata in modo persistente.",
+                            placeholder="sk-..."
+                        )
+                        st.link_button(
+                            "Apri pagina API keys",
+                            self._OPENAI_API_KEYS_URL,
+                            use_container_width=True,
+                        )
+                    with col2:
+                        st.write("")
+                        st.write("")
+                        if st.button("Salva", use_container_width=True):
+                            settings.openai_api_key = new_api_key.strip()
+                            settings.openai_auth_method = "api_key"
+                            self._service.save_user_llm_settings(settings)
+                            self._service._agent = None
+                            st.success("✅ Impostazioni salvate!")
+                            st.rerun()
+                else:
+                    if st.button("Genera codice dispositivo", use_container_width=True):
+                        try:
+                            from streamlit_app.llm.openai_oauth import request_device_code
+
+                            st.session_state.openai_device_pairing = request_device_code()
+                        except Exception as exc:
+                            st.error(f"Impossibile generare il codice dispositivo: {exc}")
+
+                    device_pairing = st.session_state.get("openai_device_pairing")
+                    if device_pairing:
+                        st.caption("Inserisci questo codice nella pagina di device pairing.")
+                        st.code(str(device_pairing.get("user_code") or ""), language="text")
+                        if device_pairing.get("expires_at"):
+                            st.caption(f"Scade: {device_pairing['expires_at']}")
+                        st.link_button(
+                            "OpenAI Codex Device Pairing",
+                            self._OPENAI_CODEX_DEVICE_PAIRING_URL,
+                            use_container_width=True,
+                        )
+                        st.caption("Pair in browser with a device code.")
+                        if st.button("Ho completato il pairing: salva token", use_container_width=True):
+                            try:
+                                from streamlit_app.llm.openai_oauth import (
+                                    DeviceAuthorizationPending,
+                                    complete_device_code_login,
+                                )
+
+                                token_payload = complete_device_code_login(
+                                    str(device_pairing.get("device_auth_id") or ""),
+                                    str(device_pairing.get("user_code") or ""),
+                                )
+                                refresh_token = str(token_payload.get("refresh_token") or "").strip()
+                                if not refresh_token:
+                                    raise ValueError("il refresh token non è presente nella risposta OAuth.")
+                                settings.openai_codex_oauth_token = refresh_token
+                                settings.openai_auth_method = "codex_oauth"
+                                self._service.save_user_llm_settings(settings)
+                                self._service._agent = None
+                                del st.session_state.openai_device_pairing
+                                st.success("✅ Login ChatGPT salvato!")
+                                st.rerun()
+                            except DeviceAuthorizationPending:
+                                st.warning("Il pairing non risulta ancora completato. Inserisci il codice nel browser e riprova.")
+                            except Exception as exc:
+                                st.error(f"Impossibile completare il pairing: {exc}")
+
+                    with st.expander("Ho già un refresh token", expanded=False):
+                        col1, col2 = st.columns([2, 1])
+                        with col1:
+                            new_refresh_token = st.text_input(
+                                "Refresh token OAuth",
+                                value=settings.openai_codex_oauth_token,
+                                type="password",
+                                key="openai_codex_oauth_token_input",
+                                help="Se hai già un refresh token, puoi incollarlo direttamente senza rifare il login.",
+                                placeholder="refresh token"
+                            )
+                        with col2:
+                            st.write("")
+                            st.write("")
+                            if st.button("Salva token", use_container_width=True):
+                                settings.openai_codex_oauth_token = new_refresh_token.strip()
+                                settings.openai_auth_method = "codex_oauth"
+                                self._service.save_user_llm_settings(settings)
+                                self._service._agent = None
+                                st.success("✅ Refresh token salvato!")
+                                st.rerun()
+
+                    st.info(
+                        "Il codice ora viene generato direttamente da questa sidebar. "
+                        "Apri il link di device pairing, inserisci il codice visualizzato qui e poi premi "
+                        "“Ho completato il pairing: salva token”."
+                    )
+                    if settings.openai_codex_oauth_token:
+                        st.success("Device pairing configurato.")
+                        st.caption(
+                            "La chat userà il backend ChatGPT/Codex associato al tuo account."
+                        )
+                        st.session_state.llm_block_reason = None
+                    else:
+                        st.session_state.llm_block_reason = (
+                            "Completa il login ChatGPT OAuth o incolla un refresh token, "
+                            "oppure usa una API key OpenAI Platform."
+                        )
+
+                is_codex_oauth = settings.openai_auth_method == "codex_oauth"
+                chat_options = self._build_openai_chat_model_options(
+                    settings.openai_chat_model,
+                    for_codex_oauth=is_codex_oauth,
+                )
+                chat_help = (
+                    "Con login ChatGPT (OAuth) sono ammessi solo i modelli del Codex CLI "
+                    "(es. gpt-5.5, gpt-5.4). I modelli della Platform (gpt-5, gpt-4o…) "
+                    "sono accettati solo con API key."
+                    if is_codex_oauth
+                    else "Seleziona il modello chat OpenAI. Puoi scegliere “Altro…” per inserire un nome custom."
+                )
                 chat_selected = st.selectbox(
                     "Modello OpenAI (chat)",
                     options=chat_options,
@@ -172,14 +327,17 @@ class ChatUI:
                         if settings.openai_chat_model in chat_options
                         else 0
                     ),
-                    help="Seleziona il modello chat OpenAI. Puoi scegliere “Altro…” per inserire un nome custom.",
+                    help=chat_help,
                 )
                 custom_chat = ""
                 if chat_selected == "Altro…":
                     custom_chat = st.text_input(
                         "Nome modello chat (custom)",
                         value=settings.openai_chat_model,
-                        help="Inserisci il nome esatto del modello (es. gpt-5).",
+                        help=(
+                            "Inserisci il nome esatto del modello (es. gpt-5.5 per OAuth, "
+                            "gpt-5 per API key)."
+                        ),
                     )
 
                 embed_options = self._build_openai_embedding_model_options(settings.openai_embedding_model)
@@ -293,6 +451,41 @@ class ChatUI:
                     st.success("✅ Impostazioni Ollama salvate!")
                     st.rerun()
 
+            with st.expander("Claude Code", expanded=False):
+                st.caption(
+                    "Salva il setup-token generato da Claude Code CLI per usare lo stesso profilo account."
+                )
+                col_doc, col_console = st.columns(2)
+                with col_doc:
+                    st.link_button(
+                        "Guida Claude Code",
+                        self._CLAUDE_CODE_SETUP_URL,
+                        use_container_width=True,
+                    )
+                with col_console:
+                    st.link_button(
+                        "Console Anthropic",
+                        self._ANTHROPIC_CONSOLE_KEYS_URL,
+                        use_container_width=True,
+                    )
+                st.code(
+                    "npm install -g @anthropic-ai/claude-code\nclaude\nclaude setup-token",
+                    language="bash",
+                )
+                anthropic_setup_token = st.text_input(
+                    "Claude Code setup-token",
+                    value=settings.anthropic_setup_token,
+                    type="password",
+                    key="anthropic_setup_token_input",
+                    help="Token generato con `claude setup-token`.",
+                    placeholder="setup-token"
+                )
+                if st.button("Salva setup-token Anthropic", use_container_width=True):
+                    settings.anthropic_setup_token = anthropic_setup_token.strip()
+                    self._service.save_user_llm_settings(settings)
+                    st.success("✅ Setup-token Anthropic salvato!")
+                    st.rerun()
+
             st.divider()
             st.header("📊 Gestione Dataset")
             
@@ -313,7 +506,7 @@ class ChatUI:
                 # Note: Don't delete "data_description_input" as it's controlled by the widget
                 # The widget will reset automatically when stored_data_description is cleared
                 for key in ["custom_db_path", "custom_table_name", "stored_data_description",
-                           "uploaded_file_name", "dataset_metadata", "selected_preset"]:
+                           "uploaded_file_name", "uploaded_file_signature", "dataset_metadata", "selected_preset"]:
                     if key in st.session_state:
                         del st.session_state[key]
                 
@@ -336,7 +529,7 @@ class ChatUI:
                 # Note: Don't delete "data_description_input" as it's controlled by the widget
                 # The widget will reset automatically when stored_data_description is cleared
                 for key in ["custom_db_path", "custom_table_name", "stored_data_description",
-                           "uploaded_file_name", "dataset_metadata"]:
+                           "uploaded_file_name", "uploaded_file_signature", "dataset_metadata"]:
                     if key in st.session_state:
                         del st.session_state[key]
                 
@@ -398,6 +591,11 @@ class ChatUI:
                 if uploaded_file:
                     # Only process if file has changed or not yet processed
                     current_file_name = st.session_state.get("uploaded_file_name", None)
+                    file_bytes = uploaded_file.getbuffer()
+                    uploaded_file_signature = hashlib.sha256(
+                        file_bytes.tobytes() if hasattr(file_bytes, "tobytes") else bytes(file_bytes)
+                    ).hexdigest()
+                    current_file_signature = st.session_state.get("uploaded_file_signature", None)
                     
                     # #region agent log
                     try:
@@ -406,7 +604,7 @@ class ChatUI:
                     except: pass
                     # #endregion
                     
-                    if current_file_name != uploaded_file.name:
+                    if current_file_name != uploaded_file.name or current_file_signature != uploaded_file_signature:
                         with st.spinner("📥 Caricamento e conversione CSV in corso..."):
                             try:
                                 from pathlib import Path
@@ -431,6 +629,7 @@ class ChatUI:
                                 st.session_state.custom_table_name = table_name
                                 st.session_state.stored_data_description = description
                                 st.session_state.uploaded_file_name = uploaded_file.name
+                                st.session_state.uploaded_file_signature = metadata.get("file_hash", uploaded_file_signature)
                                 st.session_state.dataset_metadata = metadata
                                 
                                 # #region agent log
@@ -450,7 +649,18 @@ class ChatUI:
                                     st.write(f"**File:** {metadata['original_filename']}")
                                     st.write(f"**Righe:** {metadata['row_count']:,}")
                                     st.write(f"**Colonne:** {metadata['column_count']}")
+                                    st.write(f"**Separatore rilevato:** `{metadata.get('detected_delimiter', ',')}`")
+                                    st.write(f"**Encoding:** `{metadata.get('detected_encoding', 'n/d')}`")
                                     st.write(f"**Tabella SQL:** `{table_name}`")
+                                    if metadata.get("warnings"):
+                                        st.warning("\n".join(metadata["warnings"]))
+                                    if metadata.get("profile_summary"):
+                                        st.text_area(
+                                            "Profilo automatico",
+                                            value=metadata["profile_summary"],
+                                            height=180,
+                                            disabled=True,
+                                        )
                                     st.write("\n**Colonne:**")
                                     for orig, sql in metadata['column_mapping'].items():
                                         st.write(f"- {orig} → `{sql}`")
@@ -476,6 +686,17 @@ class ChatUI:
                                 st.write(f"**File:** {metadata['original_filename']}")
                                 st.write(f"**Righe:** {metadata['row_count']:,}")
                                 st.write(f"**Colonne:** {metadata['column_count']}")
+                                st.write(f"**Separatore rilevato:** `{metadata.get('detected_delimiter', ',')}`")
+                                st.write(f"**Encoding:** `{metadata.get('detected_encoding', 'n/d')}`")
+                                if metadata.get("warnings"):
+                                    st.warning("\n".join(metadata["warnings"]))
+                                if metadata.get("profile_summary"):
+                                    st.text_area(
+                                        "Profilo automatico",
+                                        value=metadata["profile_summary"],
+                                        height=180,
+                                        disabled=True,
+                                    )
                 
                 # Button to reset to default dataset
                 if st.button("🔄 Torna al Dataset Vienna", use_container_width=True):
@@ -483,7 +704,7 @@ class ChatUI:
                     # Note: Don't delete "data_description_input" as it's controlled by the widget
                     # The widget will reset automatically when stored_data_description is cleared
                     for key in ["custom_db_path", "custom_table_name", "stored_data_description",
-                               "uploaded_file_name", "dataset_metadata", "selected_preset"]:
+                               "uploaded_file_name", "uploaded_file_signature", "dataset_metadata", "selected_preset"]:
                         if key in st.session_state:
                             del st.session_state[key]
                     # Force agent re-initialization
@@ -895,7 +1116,11 @@ class ChatUI:
             st.info("👈 Seleziona una conversazione dalla sidebar o creane una nuova per iniziare!")
             
             # Show welcome message with instructions
-            if settings.provider == "openai" and not settings.openai_api_key:
+            if (
+                settings.provider == "openai"
+                and settings.openai_auth_method == "api_key"
+                and not settings.openai_api_key
+            ):
                 st.warning("""
                 ### 🔑 Configurazione richiesta
                 
@@ -919,7 +1144,11 @@ class ChatUI:
             # Chat input
             if prompt := st.chat_input("Scrivi un messaggio…"):
                 # Check if API key is provided (warn but continue)
-                if settings.provider == "openai" and not settings.openai_api_key:
+                if (
+                    settings.provider == "openai"
+                    and settings.openai_auth_method == "api_key"
+                    and not settings.openai_api_key
+                ):
                     st.info("ℹ️ Nessuna API key configurata. Userò risposte demo. Inserisci la chiave OpenAI nelle impostazioni per usare l'agent intelligente.")
                 
                 user_id = st.session_state.user_id
@@ -958,7 +1187,11 @@ class ChatUI:
                         user_id=user_id,
                         conversation_id=conversation_id,
                         last_user_message=prompt,
-                        openai_api_key=settings.openai_api_key or None
+                        openai_api_key=(
+                            settings.openai_api_key or None
+                            if settings.openai_auth_method == "api_key"
+                            else None
+                        )
                     ):
                         chunk_type = chunk.get("type", "response")
                         chunk_content = chunk.get("content", "")

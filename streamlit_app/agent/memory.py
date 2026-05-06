@@ -1,4 +1,4 @@
-"""Persistent memory across sessions — OpenClaw MEMORY.md pattern.
+"""Persistent memory across sessions.
 
 Stores key facts from conversations as Markdown files in chat_data/.
 Supports vector-similarity recall when embeddings are available.

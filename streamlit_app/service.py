@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from streamlit_app.models import ChatMessage, Conversation, UserLlmSettings
 from streamlit_app.repository import ChatRepository
@@ -65,10 +65,16 @@ class ChatService:
     def get_user_llm_settings(self, user_id: str) -> UserLlmSettings:
         raw = self._repository.get_user_settings(user_id) or {}
         defaults = UserLlmSettings.default(user_id)
+        openai_auth_method = str(raw.get("openai_auth_method") or defaults.openai_auth_method)
+        if openai_auth_method not in {"api_key", "codex_oauth"}:
+            openai_auth_method = defaults.openai_auth_method
         return UserLlmSettings(
             user_id=user_id,
             provider=str(raw.get("llm_provider") or defaults.provider),
+            openai_auth_method=openai_auth_method,
             openai_api_key=str(raw.get("openai_api_key") or defaults.openai_api_key),
+            openai_codex_oauth_token=str(raw.get("openai_codex_oauth_token") or defaults.openai_codex_oauth_token),
+            anthropic_setup_token=str(raw.get("anthropic_setup_token") or defaults.anthropic_setup_token),
             openai_chat_model=str(raw.get("openai_chat_model") or defaults.openai_chat_model),
             openai_embedding_model=str(raw.get("openai_embedding_model") or defaults.openai_embedding_model),
             ollama_base_url=str(raw.get("ollama_base_url") or defaults.ollama_base_url),
@@ -81,6 +87,9 @@ class ChatService:
         self._repository.save_user_settings(
             user_id=settings.user_id,
             openai_api_key=settings.openai_api_key,
+            openai_auth_method=settings.openai_auth_method,
+            openai_codex_oauth_token=settings.openai_codex_oauth_token,
+            anthropic_setup_token=settings.anthropic_setup_token,
             llm_provider=settings.provider,
             openai_chat_model=settings.openai_chat_model,
             openai_embedding_model=settings.openai_embedding_model,
@@ -89,6 +98,32 @@ class ChatService:
             ollama_embedding_model=settings.ollama_embedding_model,
             interface_language=settings.interface_language,
         )
+
+    def _resolve_openai_oauth_tokens(self, preferences: UserLlmSettings) -> dict[str, Any]:
+        refresh_token = (preferences.openai_codex_oauth_token or "").strip()
+        if not refresh_token:
+            return {}
+
+        try:
+            from streamlit_app.llm.openai_oauth import refresh_access_token
+
+            tokens = refresh_access_token(refresh_token)
+        except Exception as e:
+            logger.warning("OpenAI OAuth refresh failed: %s", e)
+            return {}
+
+        access_token = str(tokens.get("access_token") or "").strip()
+        next_refresh_token = str(tokens.get("refresh_token") or "").strip()
+        if next_refresh_token and next_refresh_token != refresh_token:
+            preferences.openai_codex_oauth_token = next_refresh_token
+            self.save_user_llm_settings(preferences)
+        if not access_token:
+            return {}
+        return {
+            "access_token": access_token,
+            "account_id": tokens.get("account_id"),
+            "is_fedramp_account": bool(tokens.get("is_fedramp_account") or False),
+        }
 
     # Message management
     
@@ -109,8 +144,15 @@ class ChatService:
         if openai_api_key is not None:
             preferences.openai_api_key = openai_api_key
 
-        if preferences.provider == "openai" and not preferences.openai_api_key:
-            return None
+        openai_oauth_tokens: dict[str, Any] = {}
+        if preferences.provider == "openai":
+            if preferences.openai_auth_method == "codex_oauth":
+                openai_oauth_tokens = self._resolve_openai_oauth_tokens(preferences)
+                if not openai_oauth_tokens.get("access_token"):
+                    return None
+                self._agent = None
+            elif not preferences.openai_api_key:
+                return None
             
         # Se agent già esiste, ritorna quello esistente
         if self._agent is not None:
@@ -127,13 +169,37 @@ class ChatService:
             custom_table_name = st.session_state.get("custom_table_name", None)
             # Read from stored_data_description (saved value) or fallback to data_description_input (widget value)
             data_description = st.session_state.get("stored_data_description", st.session_state.get("data_description_input", ""))
+            dataset_metadata = st.session_state.get("dataset_metadata", {}) or {}
+            dataset_column_roles = (
+                dataset_metadata.get("profile", {}).get("roles", {})
+                if isinstance(dataset_metadata, dict)
+                else {}
+            )
+            profile_summary = dataset_metadata.get("profile_summary", "")
+            if profile_summary:
+                data_description = (
+                    f"{data_description.strip()}\n\nProfilo dataset:\n{profile_summary}"
+                    if data_description and data_description.strip()
+                    else f"Profilo dataset:\n{profile_summary}"
+                )
             selected_preset = st.session_state.get("selected_preset", "vienna")
+            openai_kwargs = {
+                "openai_api_key": (
+                    preferences.openai_api_key or None
+                    if preferences.openai_auth_method == "api_key"
+                    else None
+                ),
+                "openai_auth_method": preferences.openai_auth_method,
+                "openai_codex_access_token": str(openai_oauth_tokens.get("access_token") or "") or None,
+                "openai_codex_account_id": str(openai_oauth_tokens.get("account_id") or "") or None,
+                "openai_codex_is_fedramp": bool(openai_oauth_tokens.get("is_fedramp_account") or False),
+            }
             
             # Inizializza agent con configurazione dataset
             if custom_db_path and custom_table_name:
                 # Custom uploaded CSV
                 self._agent = TreeEvaluatorAgent(
-                    openai_api_key=preferences.openai_api_key or None,
+                    **openai_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -142,13 +208,14 @@ class ChatService:
                     ollama_embedding_model=preferences.ollama_embedding_model,
                     custom_db_path=Path(custom_db_path),
                     custom_table_name=custom_table_name,
+                    dataset_column_roles=dataset_column_roles,
                     data_description=data_description,
                     interface_language=preferences.interface_language
                 )
             elif selected_preset == "milano":
                 # Milano preset dataset
                 self._agent = TreeEvaluatorAgent(
-                    openai_api_key=preferences.openai_api_key or None,
+                    **openai_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -161,7 +228,7 @@ class ChatService:
             else:
                 # Default: Vienna dataset
                 self._agent = TreeEvaluatorAgent(
-                    openai_api_key=preferences.openai_api_key or None,
+                    **openai_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -180,7 +247,7 @@ class ChatService:
             return None
         except ValueError as e:
             import streamlit as st
-            st.error(f"❌ Chiave API non valida: {e}")
+            st.error(f"❌ Credenziali LLM non valide: {e}")
             logger.error("ValueError: %s", e)
             return None
         except Exception as e:
@@ -329,6 +396,14 @@ class ChatService:
                 "```bash\nollama pull nomic-embed-text\nollama pull gpt-oss:20b\n```"
             )
 
+        if preferences.provider == "openai" and preferences.openai_auth_method == "codex_oauth":
+            return (
+                "Errore durante la chiamata al backend ChatGPT/Codex.\n\n"
+                f"Dettaglio tecnico: `{err}`\n\n"
+                "Il pairing e il refresh token sono stati letti, ma la richiesta modello non e' stata completata. "
+                "Se il dettaglio indica 401/403, rigenera il codice dispositivo dalla sidebar e completa di nuovo il pairing."
+            )
+
         timestamp = datetime.utcnow().strftime("%H:%M:%S")
         user_msg = last_user_message if last_user_message else "messaggio utente"
         return f"Echo ({timestamp}): {user_msg} [fallback - {err}]"
@@ -343,5 +418,3 @@ class ChatService:
             openai_api_key=openai_api_key
         )
         return user_message, assistant_message
-
-

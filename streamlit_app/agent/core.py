@@ -50,6 +50,10 @@ class TreeEvaluatorAgent:
     def __init__(
         self,
         openai_api_key: Optional[str] = None,
+        openai_auth_method: str = "api_key",
+        openai_codex_access_token: Optional[str] = None,
+        openai_codex_account_id: Optional[str] = None,
+        openai_codex_is_fedramp: bool = False,
         provider: Optional[str] = None,
         openai_chat_model: Optional[str] = None,
         openai_embedding_model: Optional[str] = None,
@@ -58,6 +62,7 @@ class TreeEvaluatorAgent:
         ollama_embedding_model: Optional[str] = None,
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
+        dataset_column_roles: Optional[dict] = None,
         data_description: str = "",
         dataset_preset: str = "vienna",
         interface_language: str = "it",
@@ -67,6 +72,10 @@ class TreeEvaluatorAgent:
 
         Args:
             openai_api_key: OpenAI API key
+            openai_auth_method: OpenAI auth method ("api_key" or "codex_oauth")
+            openai_codex_access_token: Short-lived ChatGPT OAuth access token
+            openai_codex_account_id: Optional ChatGPT account/workspace id
+            openai_codex_is_fedramp: Whether the account requires FedRAMP routing
             provider: LLM provider (openai/ollama)
             openai_chat_model: OpenAI chat model name
             openai_embedding_model: OpenAI embedding model name
@@ -75,6 +84,7 @@ class TreeEvaluatorAgent:
             ollama_embedding_model: Ollama embedding model name
             custom_db_path: Optional path to custom SQLite database
             custom_table_name: Optional custom table name in the database
+            dataset_column_roles: Optional role hints inferred from uploaded dataset profiling
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
             interface_language: Language for agent responses ("it" or "en")
@@ -82,6 +92,10 @@ class TreeEvaluatorAgent:
         # Initialize LLM settings and factory
         self._llm_settings: LlmSettings = LlmSettingsReader().read(
             openai_api_key_override=openai_api_key,
+            openai_auth_method_override=openai_auth_method,
+            openai_codex_access_token_override=openai_codex_access_token,
+            openai_codex_account_id_override=openai_codex_account_id,
+            openai_codex_is_fedramp_override=openai_codex_is_fedramp,
             provider_override=provider,
             openai_chat_model_override=openai_chat_model,
             openai_embedding_model_override=openai_embedding_model,
@@ -114,7 +128,11 @@ class TreeEvaluatorAgent:
             interface_language=self._interface_language,
         )
         self._tools = tool_initializer.initialize_tools(
-            custom_db_path, custom_table_name, data_description, dataset_preset
+            custom_db_path,
+            custom_table_name,
+            data_description,
+            dataset_preset,
+            dataset_column_roles=dataset_column_roles or {},
         )
         self._dynamic_tools_summary = tool_initializer.dynamic_tools_summary
 
@@ -162,7 +180,11 @@ class TreeEvaluatorAgent:
             self._fallback_model = fallback or self._llm_settings.ollama_chat_model
         else:
             self._primary_model = self._llm_settings.openai_chat_model
-            self._fallback_model = self._llm_settings.openai_fallback_model
+            self._fallback_model = (
+                self._llm_settings.openai_chat_model
+                if self._llm_settings.openai_auth_method == "codex_oauth"
+                else self._llm_settings.openai_fallback_model
+            )
 
     # ===== Node Methods =====
 
@@ -556,6 +578,19 @@ class TreeEvaluatorAgent:
                 model=model,
                 temperature=temperature,
                 base_url=self._llm_settings.ollama_base_url,
+            )
+
+        if self._llm_settings.openai_auth_method == "codex_oauth":
+            from streamlit_app.llm.codex_backend import (
+                ChatGPTCodexBackendChatModel,
+                resolve_codex_oauth_model,
+            )
+
+            return ChatGPTCodexBackendChatModel(
+                model_name=resolve_codex_oauth_model(model),
+                access_token=self._llm_settings.openai_codex_access_token or "",
+                account_id=self._llm_settings.openai_codex_account_id,
+                is_fedramp_account=self._llm_settings.openai_codex_is_fedramp,
             )
 
         from langchain_openai import ChatOpenAI

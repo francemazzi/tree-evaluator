@@ -8,6 +8,7 @@ from streamlit_app.tools.chart_tool import ChartGenerationTool
 from streamlit_app.tools.co2_aggregate_tool import CO2AggregateTool
 from streamlit_app.tools.map_tool import MapGenerationTool
 from streamlit_app.tools.sql_validator import SQLValidator
+from streamlit_app.agent.tool_initializer import ToolInitializer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +25,18 @@ class FakeLLM:
         response = Response()
         response.content = self._content
         return response
+
+
+def _tool_initializer() -> ToolInitializer:
+    return ToolInitializer(
+        base_llm=FakeLLM("{}"),
+        fallback_llm=FakeLLM("{}"),
+        embeddings=None,
+    )
+
+
+def _tool_by_name(tools: list, name: str):
+    return next(tool for tool in tools if tool.name == name)
 
 
 def test_sql_validator_accepts_readonly_cte_with_allowed_base_table() -> None:
@@ -90,3 +103,70 @@ def test_map_uses_configured_vienna_table_and_does_not_fallback_to_milano() -> N
 
     assert result["success"] is False
     assert "coordinate GPS" in result["error"]
+
+
+def test_agent_routes_custom_dataset_to_chart_and_map_tools(tmp_path: Path) -> None:
+    custom_db_path = tmp_path / "custom.db"
+    initializer = _tool_initializer()
+
+    tools = initializer.initialize_tools(
+        custom_db_path=custom_db_path,
+        custom_table_name="uploaded_data",
+        data_description="Dataset custom",
+        dataset_preset="vienna",
+        dataset_column_roles={
+            "latitude_candidates": ["lat"],
+            "longitude_candidates": ["lon"],
+        },
+    )
+
+    dataset_tool = _tool_by_name(tools, "query_tree_dataset")
+    chart_tool = _tool_by_name(tools, "generate_chart")
+    map_tool = _tool_by_name(tools, "generate_map")
+
+    assert dataset_tool._db_path == custom_db_path
+    assert dataset_tool._table_name == "uploaded_data"
+    assert chart_tool._db_path == custom_db_path
+    assert chart_tool._table_name == "uploaded_data"
+    assert map_tool._db_path == custom_db_path
+    assert map_tool._table_name == "uploaded_data"
+    assert map_tool._lat_column == "lat"
+    assert map_tool._lon_column == "lon"
+
+
+def test_agent_routes_vienna_chart_and_map_to_vienna_dataset() -> None:
+    initializer = _tool_initializer()
+
+    tools = initializer.initialize_tools(
+        custom_db_path=None,
+        custom_table_name=None,
+        data_description="",
+        dataset_preset="vienna",
+    )
+
+    chart_tool = _tool_by_name(tools, "generate_chart")
+    map_tool = _tool_by_name(tools, "generate_map")
+
+    assert chart_tool._db_path.name == "BAUMKATOGD.db"
+    assert chart_tool._table_name == "baumkatogd"
+    assert map_tool._db_path.name == "BAUMKATOGD.db"
+    assert map_tool._table_name == "baumkatogd"
+
+
+def test_agent_routes_milano_chart_and_map_to_milano_dataset() -> None:
+    initializer = _tool_initializer()
+
+    tools = initializer.initialize_tools(
+        custom_db_path=None,
+        custom_table_name=None,
+        data_description="",
+        dataset_preset="milano",
+    )
+
+    chart_tool = _tool_by_name(tools, "generate_chart")
+    map_tool = _tool_by_name(tools, "generate_map")
+
+    assert chart_tool._db_path.name == "dataset_milano.db"
+    assert chart_tool._table_name == "milano_trees"
+    assert map_tool._db_path.name == "dataset_milano.db"
+    assert map_tool._table_name == "milano_trees"

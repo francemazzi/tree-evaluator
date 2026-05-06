@@ -71,6 +71,10 @@ OPENAI_API_KEY=sk-xxx docker compose up
 # Settings → "OpenAI API Key" → inserisci chiave
 ```
 
+Nota: la UI supporta anche il login ChatGPT via OAuth con refresh token e
+il salvataggio di un setup-token Claude Code. In alternativa puoi usare la
+classica API key OpenAI Platform oppure Ollama locale.
+
 Vedi [DOCKER.md](DOCKER.md) per configurazione avanzata.
 
 **Uso Ollama in locale (senza API key):**

@@ -67,6 +67,7 @@ class TreeEvaluatorAgent:
         ollama_embedding_model: Optional[str] = None,
         custom_db_path: Optional[Path] = None,
         custom_table_name: Optional[str] = None,
+        dataset_column_roles: Optional[dict] = None,
         data_description: str = "",
         dataset_preset: str = "vienna",
         interface_language: str = "it"
@@ -83,6 +84,7 @@ class TreeEvaluatorAgent:
             ollama_embedding_model: Ollama embedding model name
             custom_db_path: Optional path to custom SQLite database
             custom_table_name: Optional custom table name in the database
+            dataset_column_roles: Optional role hints inferred from uploaded dataset profiling
             data_description: Optional description of the data for context
             dataset_preset: Preset dataset to use ("vienna", "milano")
             interface_language: Language for agent responses ("it" for Italian, "en" for English)
@@ -116,7 +118,13 @@ class TreeEvaluatorAgent:
         self._interface_language = interface_language if interface_language in ["it", "en"] else "it"
 
         # Initialize tools
-        self._tools = self._initialize_tools(custom_db_path, custom_table_name, data_description, dataset_preset)
+        self._tools = self._initialize_tools(
+            custom_db_path,
+            custom_table_name,
+            data_description,
+            dataset_preset,
+            dataset_column_roles=dataset_column_roles or {},
+        )
 
         # Initialize LLM with tools bound
         self._llm = self._base_llm.bind_tools(self._tools)
@@ -130,25 +138,37 @@ class TreeEvaluatorAgent:
         # Build graph
         self._graph = self._build_graph()
 
-    def _initialize_tools(self, custom_db_path, custom_table_name, data_description, dataset_preset) -> List:
+    def _initialize_tools(
+        self,
+        custom_db_path,
+        custom_table_name,
+        data_description,
+        dataset_preset,
+        dataset_column_roles: Optional[dict] = None,
+    ) -> List:
         """Initialize all available tools for the agent."""
-        # Initialize DatasetQueryTool
+        dataset_column_roles = dataset_column_roles or {}
+
+        active_db_path = None
+        active_table_name = None
+        active_dataset_type = "vienna"
+
         if custom_db_path and custom_table_name:
-            dataset_tool = DatasetQueryTool(
-                db_path=custom_db_path,
-                table_name=custom_table_name,
-                user_description=data_description,
-                llm=self._base_llm,
-                fallback_llm=self._fallback_llm,
-                embeddings=self._embeddings,
-            )
+            active_db_path = custom_db_path
+            active_table_name = custom_table_name
+            active_dataset_type = "custom"
         elif dataset_preset in DATASET_PRESETS:
             preset = DATASET_PRESETS[dataset_preset]
-            db_path = Path(__file__).parent.parent / preset["db_path"]
+            active_db_path = Path(__file__).parent.parent / preset["db_path"]
+            active_table_name = preset["table_name"]
+            active_dataset_type = dataset_preset
+
+        # Initialize DatasetQueryTool
+        if active_db_path and active_table_name:
             dataset_tool = DatasetQueryTool(
-                db_path=db_path,
-                table_name=preset["table_name"],
-                user_description=preset["description"],
+                db_path=active_db_path,
+                table_name=active_table_name,
+                user_description=data_description if active_dataset_type == "custom" else DATASET_PRESETS.get(active_dataset_type, {}).get("description", data_description),
                 llm=self._base_llm,
                 fallback_llm=self._fallback_llm,
                 embeddings=self._embeddings,
@@ -171,20 +191,11 @@ class TreeEvaluatorAgent:
         )
 
         # Initialize CO2AggregateTool
-        if custom_db_path and custom_table_name:
+        if active_db_path and active_table_name:
             co2_aggregate_tool = CO2AggregateTool(
-                db_path=custom_db_path,
-                table_name=custom_table_name,
-                dataset_type="custom",
-                llm=self._base_llm
-            )
-        elif dataset_preset in DATASET_PRESETS:
-            preset = DATASET_PRESETS[dataset_preset]
-            db_path = Path(__file__).parent.parent / preset["db_path"]
-            co2_aggregate_tool = CO2AggregateTool(
-                db_path=db_path,
-                table_name=preset["table_name"],
-                dataset_type=dataset_preset,
+                db_path=active_db_path,
+                table_name=active_table_name,
+                dataset_type=active_dataset_type,
                 llm=self._base_llm
             )
         else:
@@ -193,16 +204,32 @@ class TreeEvaluatorAgent:
                 llm=self._base_llm
             )
 
-        # Initialize MapGenerationTool
-        if custom_db_path and custom_table_name:
-            map_tool = MapGenerationTool(
-                db_path=custom_db_path,
-                table_name=custom_table_name,
+        # Initialize ChartGenerationTool against the active dataset, not always Vienna.
+        if active_db_path and active_table_name:
+            chart_tool = ChartGenerationTool(
+                db_path=active_db_path,
+                table_name=active_table_name,
                 llm=self._base_llm,
                 fallback_llm=self._fallback_llm,
             )
-        elif dataset_preset == "milano":
-            map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
+        else:
+            chart_tool = ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
+
+        # Initialize MapGenerationTool
+        latitude_candidates = dataset_column_roles.get("latitude_candidates") or []
+        longitude_candidates = dataset_column_roles.get("longitude_candidates") or []
+        lat_column = latitude_candidates[0] if latitude_candidates else "latitude"
+        lon_column = longitude_candidates[0] if longitude_candidates else "longitude"
+
+        if active_db_path and active_table_name:
+            map_tool = MapGenerationTool(
+                db_path=active_db_path,
+                table_name=active_table_name,
+                lat_column=lat_column if active_dataset_type == "custom" else "latitude",
+                lon_column=lon_column if active_dataset_type == "custom" else "longitude",
+                llm=self._base_llm,
+                fallback_llm=self._fallback_llm,
+            )
         else:
             map_tool = MapGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm)
 
@@ -215,7 +242,7 @@ class TreeEvaluatorAgent:
             EnvironmentEstimationTool(),
             dataset_tool,
             species_list_tool,
-            ChartGenerationTool(llm=self._base_llm, fallback_llm=self._fallback_llm),
+            chart_tool,
             map_tool,
             HeyerVolumeTool(),
             GeneralVolumeTool(),

@@ -1,8 +1,7 @@
 """Unified tool-call tracking and loop detection.
 
 Replaces three overlapping systems (ToolLoopManager, ToolLoopGuard,
-SemanticToolLoopDetector) with a single, clean implementation inspired
-by OpenClaw's failure tracking pattern:
+SemanticToolLoopDetector) with a single, clean implementation:
   - Track (tool_name, args_hash) tuples
   - MAX_IDENTICAL_CALLS = 2  →  stop after 2 identical calls
   - Per-tool thresholds from ToolRegistry

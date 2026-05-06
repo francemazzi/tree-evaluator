@@ -85,6 +85,9 @@ class ChatRepository:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id TEXT PRIMARY KEY,
                     openai_api_key TEXT,
+                    openai_auth_method TEXT,
+                    openai_codex_oauth_token TEXT,
+                    anthropic_setup_token TEXT,
                     llm_provider TEXT,
                     openai_chat_model TEXT,
                     openai_embedding_model TEXT,
@@ -117,6 +120,9 @@ class ChatRepository:
 
         desired_columns = {
             "llm_provider": "TEXT",
+            "openai_auth_method": "TEXT",
+            "openai_codex_oauth_token": "TEXT",
+            "anthropic_setup_token": "TEXT",
             "openai_chat_model": "TEXT",
             "openai_embedding_model": "TEXT",
             "ollama_base_url": "TEXT",
@@ -255,15 +261,18 @@ class ChatRepository:
         self,
         user_id: str,
         openai_api_key: str,
+        openai_auth_method: str = "api_key",
+        openai_codex_oauth_token: str = "",
+        anthropic_setup_token: str = "",
         llm_provider: str = "openai",
-        openai_chat_model: str = "gpt-5",
+        openai_chat_model: str = "gpt-5.5",
         openai_embedding_model: str = "text-embedding-3-small",
         ollama_base_url: str = "",
         ollama_chat_model: str = "qwen2.5:7b-instruct",
         ollama_embedding_model: str = "nomic-embed-text",
         interface_language: str = "it",
     ) -> None:
-        """Save or update user settings (LLM provider + models + optional OpenAI API key + interface language)."""
+        """Save or update user settings (LLM provider + auth profile + models + interface language)."""
         from datetime import datetime, timezone
         from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
         with self._connect() as connection:
@@ -273,6 +282,9 @@ class ChatRepository:
                 INSERT INTO user_settings (
                     user_id,
                     openai_api_key,
+                    openai_auth_method,
+                    openai_codex_oauth_token,
+                    anthropic_setup_token,
                     llm_provider,
                     openai_chat_model,
                     openai_embedding_model,
@@ -282,9 +294,12 @@ class ChatRepository:
                     interface_language,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     openai_api_key = excluded.openai_api_key,
+                    openai_auth_method = excluded.openai_auth_method,
+                    openai_codex_oauth_token = excluded.openai_codex_oauth_token,
+                    anthropic_setup_token = excluded.anthropic_setup_token,
                     llm_provider = excluded.llm_provider,
                     openai_chat_model = excluded.openai_chat_model,
                     openai_embedding_model = excluded.openai_embedding_model,
@@ -297,6 +312,9 @@ class ChatRepository:
                 (
                     user_id,
                     openai_api_key,
+                    openai_auth_method,
+                    openai_codex_oauth_token,
+                    anthropic_setup_token,
                     llm_provider,
                     openai_chat_model,
                     openai_embedding_model,
@@ -315,6 +333,9 @@ class ChatRepository:
                 """
                 SELECT
                     openai_api_key,
+                    openai_auth_method,
+                    openai_codex_oauth_token,
+                    anthropic_setup_token,
                     llm_provider,
                     openai_chat_model,
                     openai_embedding_model,
@@ -329,5 +350,4 @@ class ChatRepository:
             )
             row = cursor.fetchone()
             return dict(row) if row else None
-
 

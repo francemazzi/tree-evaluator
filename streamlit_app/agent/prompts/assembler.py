@@ -1,6 +1,6 @@
 """PromptAssembler — dynamically assembles system prompt from modular Markdown files.
 
-Inspired by OpenClaw's skill-based prompt injection pattern:
+Modular prompt injection pattern:
 - SOUL.md defines agent identity
 - skills/*.md inject tool-specific guidance
 - rules/*.md inject behavioral rules
@@ -28,7 +28,7 @@ _LANG_PATTERN = re.compile(
 class PromptAssembler:
     """Dynamically assembles system prompt from modular Markdown files."""
 
-    MAX_PROMPT_CHARS: int = 150_000  # OpenClaw-inspired size cap
+    MAX_PROMPT_CHARS: int = 150_000  # Prompt size cap
 
     def __init__(self, prompts_dir: Optional[Path] = None) -> None:
         self._dir = prompts_dir or _PROMPTS_DIR

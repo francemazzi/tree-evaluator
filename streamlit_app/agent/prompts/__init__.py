@@ -1,4 +1,4 @@
-"""Modular prompt system — OpenClaw-inspired skill-based architecture."""
+"""Modular prompt system with skill-based architecture."""
 
 from __future__ import annotations
 

@@ -24,7 +24,11 @@ class LlmSettings:
     provider: LlmProvider
 
     # OpenAI
+    openai_auth_method: str
     openai_api_key: Optional[str]
+    openai_codex_access_token: Optional[str]
+    openai_codex_account_id: Optional[str]
+    openai_codex_is_fedramp: bool
     openai_chat_model: str
     openai_fallback_model: str
     openai_embedding_model: str
@@ -46,6 +50,10 @@ class LlmSettingsReader:
     def read(
         self,
         openai_api_key_override: Optional[str] = None,
+        openai_auth_method_override: Optional[str] = None,
+        openai_codex_access_token_override: Optional[str] = None,
+        openai_codex_account_id_override: Optional[str] = None,
+        openai_codex_is_fedramp_override: Optional[bool] = None,
         provider_override: Optional[str] = None,
         openai_chat_model_override: Optional[str] = None,
         openai_fallback_model_override: Optional[str] = None,
@@ -58,10 +66,31 @@ class LlmSettingsReader:
         provider = LlmProvider.from_string(provider_override or os.getenv("LLM_PROVIDER"))
 
         openai_api_key = openai_api_key_override or os.getenv("OPENAI_API_KEY")
+        openai_auth_method = (
+            openai_auth_method_override
+            or os.getenv("OPENAI_AUTH_METHOD")
+            or "api_key"
+        )
+        if openai_auth_method not in {"api_key", "codex_oauth"}:
+            openai_auth_method = "api_key"
 
         return LlmSettings(
             provider=provider,
+            openai_auth_method=openai_auth_method,
             openai_api_key=openai_api_key,
+            openai_codex_access_token=(
+                openai_codex_access_token_override
+                or os.getenv("OPENAI_CODEX_ACCESS_TOKEN")
+            ),
+            openai_codex_account_id=(
+                openai_codex_account_id_override
+                or os.getenv("OPENAI_CODEX_ACCOUNT_ID")
+            ),
+            openai_codex_is_fedramp=(
+                openai_codex_is_fedramp_override
+                if openai_codex_is_fedramp_override is not None
+                else os.getenv("OPENAI_CODEX_FEDRAMP", "").strip().lower() in {"1", "true", "yes"}
+            ),
             openai_chat_model=openai_chat_model_override or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o"),
             openai_fallback_model=openai_fallback_model_override or os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
             openai_embedding_model=openai_embedding_model_override or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
@@ -107,6 +136,11 @@ class LlmFactory:
                 model=fallback_model,
                 temperature=self._settings.fallback_temperature,
             )
+        if self._settings.openai_auth_method == "codex_oauth":
+            return self._create_openai_chat(
+                model=self._settings.openai_chat_model,
+                temperature=self._settings.fallback_temperature,
+            )
         return self._create_openai_chat(
             model=self._settings.openai_fallback_model,
             temperature=self._settings.fallback_temperature,
@@ -115,16 +149,41 @@ class LlmFactory:
     def create_embeddings(self) -> Any:
         if self._settings.provider == LlmProvider.OLLAMA:
             return self._create_ollama_embeddings(model=self._settings.ollama_embedding_model)
+        if self._settings.openai_auth_method == "codex_oauth":
+            from streamlit_app.llm.codex_backend import DeterministicHashEmbeddings
+
+            return DeterministicHashEmbeddings()
         return self._create_openai_embeddings(model=self._settings.openai_embedding_model)
 
     def validate(self) -> None:
         """Raise a ValueError if mandatory settings for the provider are missing."""
-        if self._settings.provider == LlmProvider.OPENAI and not self._settings.openai_api_key:
+        if self._settings.provider != LlmProvider.OPENAI:
+            return
+        if self._settings.openai_auth_method == "codex_oauth":
+            if not self._settings.openai_codex_access_token:
+                raise ValueError(
+                    "ChatGPT OAuth access token not found. Complete device pairing in the UI."
+                )
+            return
+        if not self._settings.openai_api_key:
             raise ValueError(
                 "OpenAI API key not found. Provide it via UI Settings or set OPENAI_API_KEY environment variable."
             )
 
     def _create_openai_chat(self, model: str, temperature: float) -> Any:
+        if self._settings.openai_auth_method == "codex_oauth":
+            from streamlit_app.llm.codex_backend import (
+                ChatGPTCodexBackendChatModel,
+                resolve_codex_oauth_model,
+            )
+
+            return ChatGPTCodexBackendChatModel(
+                model_name=resolve_codex_oauth_model(model),
+                access_token=self._settings.openai_codex_access_token or "",
+                account_id=self._settings.openai_codex_account_id,
+                is_fedramp_account=self._settings.openai_codex_is_fedramp,
+            )
+
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
@@ -154,5 +213,3 @@ class LlmFactory:
             model=model,
             base_url=self._settings.ollama_base_url,
         )
-
-

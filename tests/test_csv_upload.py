@@ -10,18 +10,20 @@ from pathlib import Path
 import tempfile
 import pytest
 
-from streamlit_app.services.data_manager import DynamicDataManager
+from streamlit_app.services.data_manager import DatasetValidationError, DynamicDataManager
 from streamlit_app.tools.dataset_tool import DatasetQueryTool
 
 
 class FakeUploadedFile:
     """Mock Streamlit uploaded file for testing."""
     
-    def __init__(self, name: str, content: str):
+    def __init__(self, name: str, content: str | bytes):
         self.name = name
         self._content = content
     
     def getbuffer(self):
+        if isinstance(self._content, bytes):
+            return self._content
         return self._content.encode('utf-8')
 
 
@@ -111,6 +113,9 @@ class TestDynamicDataManager:
         # Verify dtypes
         assert "anno" in metadata["dtypes"]
         assert "vendite" in metadata["dtypes"]
+        assert metadata["detected_delimiter"] == ","
+        assert metadata["detected_encoding"] in {"utf-8", "utf-8-sig"}
+        assert metadata["file_hash"]
     
     def test_database_content(self, temp_upload_dir, sample_csv_content):
         """Test that database contains correct data."""
@@ -161,6 +166,102 @@ class TestDynamicDataManager:
         assert table_name in schema
         assert "regione" in schema.lower()
         assert "vendite" in schema.lower()
+
+    def test_semicolon_csv_detected_as_multiple_columns(self, temp_upload_dir):
+        """European CSV files with semicolon delimiters should not collapse to one column."""
+        csv_content = """Regione;Vendite;Prezzo
+Lombardia;10;1,25
+Lazio;20;3,50"""
+
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("semicolon.csv", csv_content)
+        db_path, table_name, metadata = manager.process_uploaded_file(fake_file)
+
+        assert db_path.exists()
+        assert table_name == "uploaded_data"
+        assert metadata["detected_delimiter"] == ";"
+        assert metadata["decimal_separator"] == ","
+        assert metadata["columns"] == ["regione", "vendite", "prezzo"]
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT prezzo FROM {table_name} WHERE regione = 'Lombardia'")
+        assert cursor.fetchone()[0] == 1.25
+        conn.close()
+
+    def test_duplicate_sanitized_columns_are_made_unique(self, temp_upload_dir):
+        """Columns that sanitize to the same SQL name should not fail SQLite import."""
+        csv_content = """A-B,A B
+1,2
+3,4"""
+
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("duplicate_columns.csv", csv_content)
+        db_path, table_name, metadata = manager.process_uploaded_file(fake_file)
+
+        assert db_path.exists()
+        assert metadata["columns"] == ["a_b", "a_b_2"]
+        assert metadata["column_mapping"]["A-B"] == "a_b"
+        assert metadata["column_mapping"]["A B"] == "a_b_2"
+        assert metadata["warnings"]
+
+    def test_empty_csv_is_rejected(self, temp_upload_dir):
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("empty.csv", "")
+
+        with pytest.raises(DatasetValidationError, match="vuoto"):
+            manager.process_uploaded_file(fake_file)
+
+    def test_upload_size_limit_is_enforced(self, temp_upload_dir):
+        manager = DynamicDataManager(temp_upload_dir, max_upload_size_mb=0)
+        fake_file = FakeUploadedFile("too_big.csv", "a,b\n1,2\n")
+
+        with pytest.raises(DatasetValidationError, match="limite"):
+            manager.process_uploaded_file(fake_file)
+
+    def test_upload_filename_cannot_escape_upload_dir(self, temp_upload_dir):
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("../escape.csv", "a,b\n1,2\n")
+
+        db_path, _table_name, metadata = manager.process_uploaded_file(fake_file)
+
+        assert db_path.parent.resolve() == temp_upload_dir.resolve()
+        assert metadata["stored_filename"] == "escape.csv"
+
+    def test_metadata_includes_dataset_profile(self, temp_upload_dir, sample_csv_content):
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("profile.csv", sample_csv_content)
+
+        _db_path, _table_name, metadata = manager.process_uploaded_file(fake_file)
+
+        profile = metadata["profile"]
+        assert profile["row_count"] == 18
+        assert profile["column_count"] == 5
+        assert "vendite" in profile["numeric_columns"]
+        assert profile["columns"]["vendite"]["semantic_type"] == "numeric"
+        assert profile["columns"]["vendite"]["null_count"] == 0
+        assert profile["columns"]["regione"]["semantic_type"] == "categorical"
+        assert "Profilo" not in metadata["profile_summary"]
+        assert "Colonne numeriche" in metadata["profile_summary"]
+
+    def test_profile_detects_common_dataset_roles(self, temp_upload_dir):
+        csv_content = """Species,Latitude,Longitude,Height m,Plant Date,Score,Category
+Acer platanoides,45.1,9.1,12.5,2024-01-02,5,A
+Tilia cordata,45.2,9.2,10.0,2024-02-03,8,B"""
+
+        manager = DynamicDataManager(temp_upload_dir)
+        fake_file = FakeUploadedFile("roles.csv", csv_content)
+        _db_path, _table_name, metadata = manager.process_uploaded_file(fake_file)
+
+        profile = metadata["profile"]
+        roles = profile["roles"]
+        assert roles["latitude_candidates"] == ["latitude"]
+        assert roles["longitude_candidates"] == ["longitude"]
+        assert roles["species_candidates"] == ["species"]
+        assert roles["height_candidates"] == ["height_m"]
+        assert "plant_date" in profile["datetime_columns"]
+        assert "score" in profile["numeric_columns"]
+        assert "Ruoli rilevati" in metadata["profile_summary"]
 
 
 class TestDatasetQueryToolWithCustomDB:
@@ -355,4 +456,3 @@ def test_csv_with_numeric_types(temp_upload_dir):
 if __name__ == "__main__":
     # Run tests
     pytest.main([__file__, "-v"])
-

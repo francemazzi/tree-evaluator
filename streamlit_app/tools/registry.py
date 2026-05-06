@@ -3,8 +3,7 @@
 Provides per-tool configuration (max calls, category, descriptions) in one place,
 eliminating hardcoded per-tool thresholds scattered across loop detection code.
 
-Inspired by OpenClaw's tool assembly pattern where tools self-describe their
-capabilities and limits.
+Tools self-describe their capabilities and limits.
 """
 
 from __future__ import annotations
