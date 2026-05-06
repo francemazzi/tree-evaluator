@@ -68,6 +68,9 @@ class ChatService:
         openai_auth_method = str(raw.get("openai_auth_method") or defaults.openai_auth_method)
         if openai_auth_method not in {"api_key", "codex_oauth"}:
             openai_auth_method = defaults.openai_auth_method
+        anthropic_auth_method = str(raw.get("anthropic_auth_method") or defaults.anthropic_auth_method)
+        if anthropic_auth_method not in {"oauth", "api_key"}:
+            anthropic_auth_method = defaults.anthropic_auth_method
         return UserLlmSettings(
             user_id=user_id,
             provider=str(raw.get("llm_provider") or defaults.provider),
@@ -75,6 +78,10 @@ class ChatService:
             openai_api_key=str(raw.get("openai_api_key") or defaults.openai_api_key),
             openai_codex_oauth_token=str(raw.get("openai_codex_oauth_token") or defaults.openai_codex_oauth_token),
             anthropic_setup_token=str(raw.get("anthropic_setup_token") or defaults.anthropic_setup_token),
+            anthropic_auth_method=anthropic_auth_method,
+            anthropic_oauth_refresh_token=str(raw.get("anthropic_oauth_refresh_token") or defaults.anthropic_oauth_refresh_token),
+            anthropic_api_key=str(raw.get("anthropic_api_key") or defaults.anthropic_api_key),
+            anthropic_chat_model=str(raw.get("anthropic_chat_model") or defaults.anthropic_chat_model),
             openai_chat_model=str(raw.get("openai_chat_model") or defaults.openai_chat_model),
             openai_embedding_model=str(raw.get("openai_embedding_model") or defaults.openai_embedding_model),
             ollama_base_url=str(raw.get("ollama_base_url") or defaults.ollama_base_url),
@@ -90,6 +97,10 @@ class ChatService:
             openai_auth_method=settings.openai_auth_method,
             openai_codex_oauth_token=settings.openai_codex_oauth_token,
             anthropic_setup_token=settings.anthropic_setup_token,
+            anthropic_auth_method=settings.anthropic_auth_method,
+            anthropic_oauth_refresh_token=settings.anthropic_oauth_refresh_token,
+            anthropic_api_key=settings.anthropic_api_key,
+            anthropic_chat_model=settings.anthropic_chat_model,
             llm_provider=settings.provider,
             openai_chat_model=settings.openai_chat_model,
             openai_embedding_model=settings.openai_embedding_model,
@@ -125,6 +136,31 @@ class ChatService:
             "is_fedramp_account": bool(tokens.get("is_fedramp_account") or False),
         }
 
+    def _resolve_anthropic_oauth_tokens(self, preferences: UserLlmSettings) -> dict[str, Any]:
+        refresh_token = (preferences.anthropic_oauth_refresh_token or "").strip()
+        if not refresh_token:
+            return {}
+
+        try:
+            from streamlit_app.llm.anthropic_oauth import refresh_access_token
+
+            tokens = refresh_access_token(refresh_token)
+        except Exception as e:
+            logger.warning("Anthropic OAuth refresh failed: %s", e)
+            return {}
+
+        access_token = str(tokens.get("access_token") or "").strip()
+        next_refresh_token = str(tokens.get("refresh_token") or "").strip()
+        if next_refresh_token and next_refresh_token != refresh_token:
+            preferences.anthropic_oauth_refresh_token = next_refresh_token
+            self.save_user_llm_settings(preferences)
+        if not access_token:
+            return {}
+        return {
+            "access_token": access_token,
+            "expires_at": tokens.get("expires_at"),
+        }
+
     # Message management
     
     def get_conversation_messages(self, conversation_id: int) -> List[ChatMessage]:
@@ -145,6 +181,7 @@ class ChatService:
             preferences.openai_api_key = openai_api_key
 
         openai_oauth_tokens: dict[str, Any] = {}
+        anthropic_oauth_tokens: dict[str, Any] = {}
         if preferences.provider == "openai":
             if preferences.openai_auth_method == "codex_oauth":
                 openai_oauth_tokens = self._resolve_openai_oauth_tokens(preferences)
@@ -152,6 +189,14 @@ class ChatService:
                     return None
                 self._agent = None
             elif not preferences.openai_api_key:
+                return None
+        elif preferences.provider == "anthropic":
+            if preferences.anthropic_auth_method == "oauth":
+                anthropic_oauth_tokens = self._resolve_anthropic_oauth_tokens(preferences)
+                if not anthropic_oauth_tokens.get("access_token"):
+                    return None
+                self._agent = None
+            elif not preferences.anthropic_api_key:
                 return None
             
         # Se agent già esiste, ritorna quello esistente
@@ -194,12 +239,23 @@ class ChatService:
                 "openai_codex_account_id": str(openai_oauth_tokens.get("account_id") or "") or None,
                 "openai_codex_is_fedramp": bool(openai_oauth_tokens.get("is_fedramp_account") or False),
             }
+            anthropic_kwargs = {
+                "anthropic_auth_method": preferences.anthropic_auth_method,
+                "anthropic_api_key": (
+                    preferences.anthropic_api_key or None
+                    if preferences.anthropic_auth_method == "api_key"
+                    else None
+                ),
+                "anthropic_oauth_access_token": str(anthropic_oauth_tokens.get("access_token") or "") or None,
+                "anthropic_chat_model": preferences.anthropic_chat_model,
+            }
             
             # Inizializza agent con configurazione dataset
             if custom_db_path and custom_table_name:
                 # Custom uploaded CSV
                 self._agent = TreeEvaluatorAgent(
                     **openai_kwargs,
+                    **anthropic_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -216,6 +272,7 @@ class ChatService:
                 # Milano preset dataset
                 self._agent = TreeEvaluatorAgent(
                     **openai_kwargs,
+                    **anthropic_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -229,6 +286,7 @@ class ChatService:
                 # Default: Vienna dataset
                 self._agent = TreeEvaluatorAgent(
                     **openai_kwargs,
+                    **anthropic_kwargs,
                     provider=preferences.provider,
                     openai_chat_model=preferences.openai_chat_model,
                     openai_embedding_model=preferences.openai_embedding_model,
@@ -402,6 +460,14 @@ class ChatService:
                 f"Dettaglio tecnico: `{err}`\n\n"
                 "Il pairing e il refresh token sono stati letti, ma la richiesta modello non e' stata completata. "
                 "Se il dettaglio indica 401/403, rigenera il codice dispositivo dalla sidebar e completa di nuovo il pairing."
+            )
+
+        if preferences.provider == "anthropic":
+            return (
+                "Errore durante la chiamata al backend Claude/Anthropic.\n\n"
+                f"Dettaglio tecnico: `{err}`\n\n"
+                "Il pairing o la chiave Anthropic sono stati letti, ma la richiesta modello non e' stata completata. "
+                "Se il dettaglio indica 401/403, rigenera il login Claude OAuth dalla sidebar o verifica la API key."
             )
 
         timestamp = datetime.utcnow().strftime("%H:%M:%S")

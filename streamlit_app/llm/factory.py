@@ -9,6 +9,7 @@ from streamlit_app.llm.ollama_base_url import OllamaBaseUrlResolver
 
 class LlmProvider(str, Enum):
     OPENAI = "openai"
+    ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
 
     @classmethod
@@ -16,6 +17,8 @@ class LlmProvider(str, Enum):
         normalized = (value or "").strip().lower()
         if normalized in ("ollama",):
             return cls.OLLAMA
+        if normalized in ("anthropic", "claude"):
+            return cls.ANTHROPIC
         return cls.OPENAI
 
 
@@ -32,6 +35,13 @@ class LlmSettings:
     openai_chat_model: str
     openai_fallback_model: str
     openai_embedding_model: str
+
+    # Anthropic
+    anthropic_auth_method: str
+    anthropic_api_key: Optional[str]
+    anthropic_oauth_access_token: Optional[str]
+    anthropic_chat_model: str
+    anthropic_fallback_model: str
 
     # Ollama
     ollama_base_url: str
@@ -58,6 +68,11 @@ class LlmSettingsReader:
         openai_chat_model_override: Optional[str] = None,
         openai_fallback_model_override: Optional[str] = None,
         openai_embedding_model_override: Optional[str] = None,
+        anthropic_auth_method_override: Optional[str] = None,
+        anthropic_api_key_override: Optional[str] = None,
+        anthropic_oauth_access_token_override: Optional[str] = None,
+        anthropic_chat_model_override: Optional[str] = None,
+        anthropic_fallback_model_override: Optional[str] = None,
         ollama_base_url_override: Optional[str] = None,
         ollama_chat_model_override: Optional[str] = None,
         ollama_fallback_model_override: Optional[str] = None,
@@ -73,6 +88,13 @@ class LlmSettingsReader:
         )
         if openai_auth_method not in {"api_key", "codex_oauth"}:
             openai_auth_method = "api_key"
+        anthropic_auth_method = (
+            anthropic_auth_method_override
+            or os.getenv("ANTHROPIC_AUTH_METHOD")
+            or "oauth"
+        )
+        if anthropic_auth_method not in {"oauth", "api_key"}:
+            anthropic_auth_method = "oauth"
 
         return LlmSettings(
             provider=provider,
@@ -94,6 +116,14 @@ class LlmSettingsReader:
             openai_chat_model=openai_chat_model_override or os.getenv("OPENAI_CHAT_MODEL", "gpt-4o"),
             openai_fallback_model=openai_fallback_model_override or os.getenv("OPENAI_FALLBACK_MODEL", "gpt-4o-mini"),
             openai_embedding_model=openai_embedding_model_override or os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+            anthropic_auth_method=anthropic_auth_method,
+            anthropic_api_key=anthropic_api_key_override or os.getenv("ANTHROPIC_API_KEY"),
+            anthropic_oauth_access_token=(
+                anthropic_oauth_access_token_override
+                or os.getenv("ANTHROPIC_OAUTH_ACCESS_TOKEN")
+            ),
+            anthropic_chat_model=anthropic_chat_model_override or os.getenv("ANTHROPIC_CHAT_MODEL", "claude-sonnet-4-5"),
+            anthropic_fallback_model=anthropic_fallback_model_override or os.getenv("ANTHROPIC_FALLBACK_MODEL", "claude-sonnet-4-5"),
             ollama_base_url=(
                 ollama_base_url_override
                 or os.getenv("OLLAMA_BASE_URL")
@@ -124,6 +154,11 @@ class LlmFactory:
                 model=self._settings.ollama_chat_model,
                 temperature=self._settings.chat_temperature,
             )
+        if self._settings.provider == LlmProvider.ANTHROPIC:
+            return self._create_anthropic_chat(
+                model=self._settings.anthropic_chat_model,
+                temperature=self._settings.chat_temperature,
+            )
         return self._create_openai_chat(
             model=self._settings.openai_chat_model,
             temperature=self._settings.chat_temperature,
@@ -133,6 +168,15 @@ class LlmFactory:
         if self._settings.provider == LlmProvider.OLLAMA:
             fallback_model = (self._settings.ollama_fallback_model or "").strip() or self._settings.ollama_chat_model
             return self._create_ollama_chat(
+                model=fallback_model,
+                temperature=self._settings.fallback_temperature,
+            )
+        if self._settings.provider == LlmProvider.ANTHROPIC:
+            fallback_model = (
+                (self._settings.anthropic_fallback_model or "").strip()
+                or self._settings.anthropic_chat_model
+            )
+            return self._create_anthropic_chat(
                 model=fallback_model,
                 temperature=self._settings.fallback_temperature,
             )
@@ -149,7 +193,10 @@ class LlmFactory:
     def create_embeddings(self) -> Any:
         if self._settings.provider == LlmProvider.OLLAMA:
             return self._create_ollama_embeddings(model=self._settings.ollama_embedding_model)
-        if self._settings.openai_auth_method == "codex_oauth":
+        if (
+            self._settings.provider == LlmProvider.ANTHROPIC
+            or self._settings.openai_auth_method == "codex_oauth"
+        ):
             from streamlit_app.llm.codex_backend import DeterministicHashEmbeddings
 
             return DeterministicHashEmbeddings()
@@ -157,7 +204,19 @@ class LlmFactory:
 
     def validate(self) -> None:
         """Raise a ValueError if mandatory settings for the provider are missing."""
-        if self._settings.provider != LlmProvider.OPENAI:
+        if self._settings.provider == LlmProvider.OLLAMA:
+            return
+        if self._settings.provider == LlmProvider.ANTHROPIC:
+            if self._settings.anthropic_auth_method == "oauth":
+                if not self._settings.anthropic_oauth_access_token:
+                    raise ValueError(
+                        "Claude OAuth access token not found. Complete Claude login in the UI."
+                    )
+                return
+            if not self._settings.anthropic_api_key:
+                raise ValueError(
+                    "Anthropic API key not found. Provide it via UI Settings or set ANTHROPIC_API_KEY."
+                )
             return
         if self._settings.openai_auth_method == "codex_oauth":
             if not self._settings.openai_codex_access_token:
@@ -190,6 +249,27 @@ class LlmFactory:
             model=model,
             temperature=temperature,
             api_key=self._settings.openai_api_key,
+        )
+
+    def _create_anthropic_chat(self, model: str, temperature: float) -> Any:
+        if self._settings.anthropic_auth_method == "oauth":
+            from streamlit_app.llm.anthropic_backend import (
+                ClaudeOAuthChatModel,
+                resolve_claude_oauth_model,
+            )
+
+            return ClaudeOAuthChatModel(
+                model_name=resolve_claude_oauth_model(model),
+                access_token=self._settings.anthropic_oauth_access_token or "",
+                temperature=temperature,
+            )
+
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=model,
+            temperature=temperature,
+            anthropic_api_key=self._settings.anthropic_api_key,
         )
 
     def _create_openai_embeddings(self, model: str) -> Any:

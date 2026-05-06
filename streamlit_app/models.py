@@ -14,11 +14,15 @@ class UserLlmSettings:
     """Persisted per-user LLM preferences used by Streamlit UI and agent initialization."""
 
     user_id: str
-    provider: str  # "openai" | "ollama"
+    provider: str  # "openai" | "anthropic" | "ollama"
     openai_auth_method: str  # "api_key" | "codex_oauth"
     openai_api_key: str
     openai_codex_oauth_token: str
     anthropic_setup_token: str
+    anthropic_auth_method: str  # "oauth" | "api_key"
+    anthropic_oauth_refresh_token: str
+    anthropic_api_key: str
+    anthropic_chat_model: str
     openai_chat_model: str
     openai_embedding_model: str
     ollama_base_url: str
@@ -35,6 +39,10 @@ class UserLlmSettings:
             openai_api_key="",
             openai_codex_oauth_token="",
             anthropic_setup_token="",
+            anthropic_auth_method="oauth",
+            anthropic_oauth_refresh_token="",
+            anthropic_api_key="",
+            anthropic_chat_model="claude-sonnet-4-5",
             openai_chat_model="gpt-5.5",
             openai_embedding_model="text-embedding-3-small",
             ollama_base_url=OllamaBaseUrlResolver().resolve(),

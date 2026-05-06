@@ -71,9 +71,13 @@ OPENAI_API_KEY=sk-xxx docker compose up
 # Settings → "OpenAI API Key" → inserisci chiave
 ```
 
-Nota: la UI supporta anche il login ChatGPT via OAuth con refresh token e
-il salvataggio di un setup-token Claude Code. In alternativa puoi usare la
-classica API key OpenAI Platform oppure Ollama locale.
+Nota: la UI supporta anche il login ChatGPT via OAuth e Anthropic/Claude come
+provider completo. Per Claude puoi usare una API key `sk-ant-...` oppure il
+login OAuth dalla sidebar: Streamlit apre un callback locale sulle porte
+`53682-53690` e salva il refresh token nel database locale. Se il browser non
+riesce a raggiungere il callback (tipico in alcune configurazioni Docker), la
+sidebar offre automaticamente un fallback copy/paste del codice OAuth. In
+alternativa puoi usare Ollama locale senza API key.
 
 Vedi [DOCKER.md](DOCKER.md) per configurazione avanzata.
 

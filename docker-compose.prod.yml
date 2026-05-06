@@ -28,6 +28,7 @@ services:
     restart: unless-stopped
     ports:
       - "8501:8501"
+      - "53682-53690:53682-53690"
     volumes:
       - chat_data:/app/data
     environment:

@@ -54,8 +54,12 @@ class TreeEvaluatorAgent:
         openai_codex_access_token: Optional[str] = None,
         openai_codex_account_id: Optional[str] = None,
         openai_codex_is_fedramp: bool = False,
+        anthropic_auth_method: str = "oauth",
+        anthropic_api_key: Optional[str] = None,
+        anthropic_oauth_access_token: Optional[str] = None,
         provider: Optional[str] = None,
         openai_chat_model: Optional[str] = None,
+        anthropic_chat_model: Optional[str] = None,
         openai_embedding_model: Optional[str] = None,
         ollama_base_url: Optional[str] = None,
         ollama_chat_model: Optional[str] = None,
@@ -76,8 +80,12 @@ class TreeEvaluatorAgent:
             openai_codex_access_token: Short-lived ChatGPT OAuth access token
             openai_codex_account_id: Optional ChatGPT account/workspace id
             openai_codex_is_fedramp: Whether the account requires FedRAMP routing
-            provider: LLM provider (openai/ollama)
+            anthropic_auth_method: Anthropic auth method ("oauth" or "api_key")
+            anthropic_api_key: Anthropic API key
+            anthropic_oauth_access_token: Short-lived Claude OAuth access token
+            provider: LLM provider (openai/anthropic/ollama)
             openai_chat_model: OpenAI chat model name
+            anthropic_chat_model: Anthropic chat model name
             openai_embedding_model: OpenAI embedding model name
             ollama_base_url: Ollama base URL
             ollama_chat_model: Ollama chat model name
@@ -99,6 +107,10 @@ class TreeEvaluatorAgent:
             provider_override=provider,
             openai_chat_model_override=openai_chat_model,
             openai_embedding_model_override=openai_embedding_model,
+            anthropic_auth_method_override=anthropic_auth_method,
+            anthropic_api_key_override=anthropic_api_key,
+            anthropic_oauth_access_token_override=anthropic_oauth_access_token,
+            anthropic_chat_model_override=anthropic_chat_model,
             ollama_base_url_override=ollama_base_url,
             ollama_chat_model_override=ollama_chat_model,
             ollama_embedding_model_override=ollama_embedding_model,
@@ -178,6 +190,10 @@ class TreeEvaluatorAgent:
             self._primary_model = self._llm_settings.ollama_chat_model
             fallback = (self._llm_settings.ollama_fallback_model or "").strip()
             self._fallback_model = fallback or self._llm_settings.ollama_chat_model
+        elif self._llm_settings.provider == LlmProvider.ANTHROPIC:
+            self._primary_model = self._llm_settings.anthropic_chat_model
+            fallback = (self._llm_settings.anthropic_fallback_model or "").strip()
+            self._fallback_model = fallback or self._llm_settings.anthropic_chat_model
         else:
             self._primary_model = self._llm_settings.openai_chat_model
             self._fallback_model = (
@@ -578,6 +594,26 @@ class TreeEvaluatorAgent:
                 model=model,
                 temperature=temperature,
                 base_url=self._llm_settings.ollama_base_url,
+            )
+
+        if self._llm_settings.provider == LlmProvider.ANTHROPIC:
+            if self._llm_settings.anthropic_auth_method == "oauth":
+                from streamlit_app.llm.anthropic_backend import (
+                    ClaudeOAuthChatModel,
+                    resolve_claude_oauth_model,
+                )
+
+                return ClaudeOAuthChatModel(
+                    model_name=resolve_claude_oauth_model(model),
+                    access_token=self._llm_settings.anthropic_oauth_access_token or "",
+                    temperature=temperature,
+                )
+
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                model=model,
+                temperature=temperature,
+                anthropic_api_key=self._llm_settings.anthropic_api_key,
             )
 
         if self._llm_settings.openai_auth_method == "codex_oauth":

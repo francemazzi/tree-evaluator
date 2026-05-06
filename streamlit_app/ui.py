@@ -21,6 +21,10 @@ class ChatUI:
         "API key OpenAI Platform": "api_key",
         "Login ChatGPT (OAuth)": "codex_oauth",
     }
+    _ANTHROPIC_AUTH_METHODS = {
+        "Login Claude (OAuth)": "oauth",
+        "API key Anthropic": "api_key",
+    }
     _OPENAI_API_KEYS_URL = "https://platform.openai.com/settings/organization/api-keys"
     _OPENAI_CODEX_DEVICE_PAIRING_URL = "https://auth.openai.com/codex/device"
     _CLAUDE_CODE_SETUP_URL = "https://docs.anthropic.com/en/docs/claude-code/setup"
@@ -92,8 +96,45 @@ class ChatUI:
                 out.append(m)
         return out
 
+    def _build_anthropic_chat_model_options(
+        self, current: str, *, for_oauth: bool = False
+    ) -> List[str]:
+        """Return Claude chat model options, ensuring the current selection is included."""
+        if for_oauth:
+            from streamlit_app.llm.anthropic_backend import CLAUDE_OAUTH_SUPPORTED_MODELS
+
+            defaults = list(CLAUDE_OAUTH_SUPPORTED_MODELS)
+        else:
+            defaults = [
+                "claude-sonnet-4-5",
+                "claude-opus-4-5",
+                "claude-haiku-4-5",
+                "claude-3-7-sonnet-latest",
+                "claude-3-5-sonnet-latest",
+                "claude-3-5-haiku-latest",
+            ]
+        current_clean = (current or "").strip()
+        options: List[str] = []
+        if current_clean and current_clean not in defaults:
+            options.append(current_clean)
+        options.extend(defaults)
+        options.append("Altro…")
+        seen = set()
+        out: List[str] = []
+        for model in options:
+            if model and model not in seen:
+                seen.add(model)
+                out.append(model)
+        return out
+
     def _resolve_openai_model_selection(self, selected: str, custom_value: str) -> str:
         """Resolve a selectbox value with optional custom input."""
+        if selected == "Altro…":
+            return (custom_value or "").strip()
+        return (selected or "").strip()
+
+    def _resolve_model_selection(self, selected: str, custom_value: str) -> str:
+        """Resolve a generic model selectbox value with optional custom input."""
         if selected == "Altro…":
             return (custom_value or "").strip()
         return (selected or "").strip()
@@ -104,6 +145,13 @@ class ChatUI:
             if value == method:
                 return label
         return "API key OpenAI Platform"
+
+    def _anthropic_auth_method_label(self, method: str) -> str:
+        """Return the UI label for a persisted Anthropic auth method."""
+        for label, value in self._ANTHROPIC_AUTH_METHODS.items():
+            if value == method:
+                return label
+        return "Login Claude (OAuth)"
 
     def _ensure_session(self) -> None:
         """Initialize session state variables."""
@@ -165,9 +213,13 @@ class ChatUI:
 
             provider = st.selectbox(
                 "Provider LLM",
-                options=["openai", "ollama"],
-                index=0 if settings.provider == "openai" else 1,
-                help="Scegli se usare OpenAI (GPT) oppure Ollama in locale.",
+                options=["openai", "anthropic", "ollama"],
+                index=(
+                    ["openai", "anthropic", "ollama"].index(settings.provider)
+                    if settings.provider in {"openai", "anthropic", "ollama"}
+                    else 0
+                ),
+                help="Scegli se usare OpenAI (GPT), Anthropic (Claude) oppure Ollama in locale.",
             )
 
             if provider != settings.provider:
@@ -379,6 +431,244 @@ class ChatUI:
                         st.success("✅ Modelli OpenAI aggiornati!")
                         st.rerun()
 
+            elif provider == "anthropic":
+                auth_labels = list(self._ANTHROPIC_AUTH_METHODS.keys())
+                current_auth_label = self._anthropic_auth_method_label(settings.anthropic_auth_method)
+                selected_auth_label = st.radio(
+                    "Metodo autenticazione Anthropic",
+                    options=auth_labels,
+                    index=auth_labels.index(current_auth_label),
+                    help="Puoi usare il login Claude OAuth oppure una API key Anthropic.",
+                )
+                selected_auth_method = self._ANTHROPIC_AUTH_METHODS[selected_auth_label]
+                if selected_auth_method != settings.anthropic_auth_method:
+                    settings.anthropic_auth_method = selected_auth_method
+                    self._service.save_user_llm_settings(settings)
+                    self._service._agent = None
+                    st.rerun()
+
+                if settings.anthropic_auth_method == "api_key":
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        anthropic_api_key = st.text_input(
+                            "Anthropic API Key",
+                            value=settings.anthropic_api_key,
+                            type="password",
+                            key="anthropic_api_key_input",
+                            help="Inserisci la tua chiave API Anthropic (sk-ant-...).",
+                            placeholder="sk-ant-...",
+                        )
+                        st.link_button(
+                            "Apri Console Anthropic",
+                            self._ANTHROPIC_CONSOLE_KEYS_URL,
+                            use_container_width=True,
+                        )
+                    with col2:
+                        st.write("")
+                        st.write("")
+                        if st.button("Salva Anthropic", use_container_width=True):
+                            settings.anthropic_api_key = anthropic_api_key.strip()
+                            settings.anthropic_auth_method = "api_key"
+                            self._service.save_user_llm_settings(settings)
+                            self._service._agent = None
+                            st.success("✅ Impostazioni Anthropic salvate!")
+                            st.rerun()
+                else:
+                    from streamlit_app.llm.anthropic_oauth import (
+                        MANUAL_REDIRECT_URI,
+                        build_authorize_url,
+                        exchange_code_for_tokens,
+                        generate_pkce,
+                        generate_state,
+                        parse_pasted_code,
+                        start_loopback_server,
+                    )
+
+                    if st.button("Avvia login Claude", use_container_width=True):
+                        try:
+                            existing_flow = st.session_state.get("anthropic_oauth_flow") or {}
+                            existing_server = existing_flow.get("server")
+                            if existing_server:
+                                existing_server.close()
+                            pkce = generate_pkce()
+                            state = generate_state()
+                            loopback = start_loopback_server(state)
+                            st.session_state.anthropic_oauth_flow = {
+                                "mode": "loopback",
+                                "state": state,
+                                "verifier": pkce.verifier,
+                                "redirect_uri": loopback.redirect_uri,
+                                "server": loopback,
+                                "authorize_url": build_authorize_url(
+                                    redirect_uri=loopback.redirect_uri,
+                                    code_challenge=pkce.challenge,
+                                    state=state,
+                                ),
+                            }
+                            st.rerun()
+                        except Exception as exc:
+                            st.warning(
+                                "Loopback OAuth non disponibile. Uso il fallback copy/paste."
+                            )
+                            pkce = generate_pkce()
+                            state = generate_state()
+                            st.session_state.anthropic_oauth_flow = {
+                                "mode": "manual",
+                                "state": state,
+                                "verifier": pkce.verifier,
+                                "redirect_uri": MANUAL_REDIRECT_URI,
+                                "authorize_url": build_authorize_url(
+                                    redirect_uri=MANUAL_REDIRECT_URI,
+                                    code_challenge=pkce.challenge,
+                                    state=state,
+                                ),
+                                "error": str(exc),
+                            }
+                            st.rerun()
+
+                    oauth_flow = st.session_state.get("anthropic_oauth_flow") or {}
+                    if oauth_flow:
+                        if oauth_flow.get("error"):
+                            st.caption(f"Fallback attivo: {oauth_flow['error']}")
+                        st.link_button(
+                            "Login Claude",
+                            str(oauth_flow.get("authorize_url") or ""),
+                            use_container_width=True,
+                        )
+                        if oauth_flow.get("mode") == "loopback":
+                            st.info(
+                                "Dopo il login Claude, torna qui e premi “Controlla callback” "
+                                "se la pagina non si aggiorna automaticamente."
+                            )
+                            server = oauth_flow.get("server")
+                            callback = server.poll() if server else None
+                            if st.button("Controlla callback Claude", use_container_width=True):
+                                callback = server.poll() if server else callback
+                            if callback:
+                                try:
+                                    token_payload = exchange_code_for_tokens(
+                                        code=str(callback.get("code") or ""),
+                                        state=str(callback.get("state") or ""),
+                                        verifier=str(oauth_flow.get("verifier") or ""),
+                                        redirect_uri=str(oauth_flow.get("redirect_uri") or ""),
+                                    )
+                                    refresh_token = str(token_payload.get("refresh_token") or "").strip()
+                                    if not refresh_token:
+                                        raise ValueError("il refresh token non è presente nella risposta OAuth.")
+                                    settings.anthropic_oauth_refresh_token = refresh_token
+                                    settings.anthropic_auth_method = "oauth"
+                                    self._service.save_user_llm_settings(settings)
+                                    self._service._agent = None
+                                    if server:
+                                        server.close()
+                                    del st.session_state.anthropic_oauth_flow
+                                    st.success("✅ Login Claude salvato!")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Impossibile completare il login Claude: {exc}")
+
+                        with st.expander("Fallback copy/paste", expanded=oauth_flow.get("mode") == "manual"):
+                            st.caption(
+                                "Se il loopback non funziona, usa questo link e incolla qui il codice "
+                                "mostrato dal browser (CODE oppure CODE#STATE)."
+                            )
+                            if st.button("Usa fallback copy/paste", use_container_width=True):
+                                pkce = generate_pkce()
+                                state = generate_state()
+                                st.session_state.anthropic_oauth_flow = {
+                                    "mode": "manual",
+                                    "state": state,
+                                    "verifier": pkce.verifier,
+                                    "redirect_uri": MANUAL_REDIRECT_URI,
+                                    "authorize_url": build_authorize_url(
+                                        redirect_uri=MANUAL_REDIRECT_URI,
+                                        code_challenge=pkce.challenge,
+                                        state=state,
+                                    ),
+                                }
+                                st.rerun()
+                            pasted_code = st.text_input(
+                                "Codice autorizzazione Claude",
+                                value="",
+                                key="anthropic_oauth_code_input",
+                                placeholder="CODE oppure CODE#STATE",
+                            )
+                            if st.button("Completa pairing Claude", use_container_width=True):
+                                try:
+                                    parsed = parse_pasted_code(
+                                        pasted_code,
+                                        default_state=str(oauth_flow.get("state") or ""),
+                                    )
+                                    token_payload = exchange_code_for_tokens(
+                                        code=parsed["code"],
+                                        state=parsed.get("state") or str(oauth_flow.get("state") or ""),
+                                        verifier=str(oauth_flow.get("verifier") or ""),
+                                        redirect_uri=str(oauth_flow.get("redirect_uri") or MANUAL_REDIRECT_URI),
+                                    )
+                                    refresh_token = str(token_payload.get("refresh_token") or "").strip()
+                                    if not refresh_token:
+                                        raise ValueError("il refresh token non è presente nella risposta OAuth.")
+                                    settings.anthropic_oauth_refresh_token = refresh_token
+                                    settings.anthropic_auth_method = "oauth"
+                                    self._service.save_user_llm_settings(settings)
+                                    self._service._agent = None
+                                    server = oauth_flow.get("server")
+                                    if server:
+                                        server.close()
+                                    del st.session_state.anthropic_oauth_flow
+                                    st.success("✅ Login Claude salvato!")
+                                    st.rerun()
+                                except Exception as exc:
+                                    st.error(f"Impossibile completare il pairing Claude: {exc}")
+
+                    if settings.anthropic_oauth_refresh_token:
+                        st.success("Login Claude OAuth configurato.")
+                        st.caption("La chat userà il backend Claude associato al tuo account.")
+                        st.session_state.llm_block_reason = None
+                    else:
+                        st.session_state.llm_block_reason = (
+                            "Completa il login Claude OAuth oppure usa una API key Anthropic."
+                        )
+
+                is_anthropic_oauth = settings.anthropic_auth_method == "oauth"
+                anthropic_options = self._build_anthropic_chat_model_options(
+                    settings.anthropic_chat_model,
+                    for_oauth=is_anthropic_oauth,
+                )
+                anthropic_selected = st.selectbox(
+                    "Modello Claude (chat)",
+                    options=anthropic_options,
+                    index=(
+                        anthropic_options.index(settings.anthropic_chat_model)
+                        if settings.anthropic_chat_model in anthropic_options
+                        else 0
+                    ),
+                    help=(
+                        "Con login Claude OAuth sono mostrati solo i modelli compatibili. "
+                        "Con API key puoi inserire un modello custom."
+                    ),
+                )
+                custom_anthropic_model = ""
+                if anthropic_selected == "Altro…":
+                    custom_anthropic_model = st.text_input(
+                        "Nome modello Claude (custom)",
+                        value=settings.anthropic_chat_model,
+                        help="Inserisci il nome esatto del modello Claude.",
+                    )
+                resolved_anthropic_model = self._resolve_model_selection(
+                    anthropic_selected,
+                    custom_anthropic_model,
+                )
+                if resolved_anthropic_model and resolved_anthropic_model != (
+                    settings.anthropic_chat_model or ""
+                ).strip():
+                    if st.button("Applica modello Claude"):
+                        settings.anthropic_chat_model = resolved_anthropic_model
+                        self._service.save_user_llm_settings(settings)
+                        self._service._agent = None
+                        st.success("✅ Modello Claude aggiornato!")
+                        st.rerun()
+
             else:
                 st.info("Stai usando **Ollama in locale**. La chiave OpenAI non è necessaria.")
 
@@ -451,9 +741,11 @@ class ChatUI:
                     st.success("✅ Impostazioni Ollama salvate!")
                     st.rerun()
 
-            with st.expander("Claude Code", expanded=False):
+            with st.expander("Claude Code setup-token (legacy)", expanded=False):
                 st.caption(
-                    "Salva il setup-token generato da Claude Code CLI per usare lo stesso profilo account."
+                    "Il setup-token Claude Code e' mantenuto solo per retrocompatibilita'. "
+                    "Per usare Claude nella chat seleziona provider Anthropic e completa il login OAuth "
+                    "o inserisci una API key."
                 )
                 col_doc, col_console = st.columns(2)
                 with col_doc:
@@ -468,23 +760,8 @@ class ChatUI:
                         self._ANTHROPIC_CONSOLE_KEYS_URL,
                         use_container_width=True,
                     )
-                st.code(
-                    "npm install -g @anthropic-ai/claude-code\nclaude\nclaude setup-token",
-                    language="bash",
-                )
-                anthropic_setup_token = st.text_input(
-                    "Claude Code setup-token",
-                    value=settings.anthropic_setup_token,
-                    type="password",
-                    key="anthropic_setup_token_input",
-                    help="Token generato con `claude setup-token`.",
-                    placeholder="setup-token"
-                )
-                if st.button("Salva setup-token Anthropic", use_container_width=True):
-                    settings.anthropic_setup_token = anthropic_setup_token.strip()
-                    self._service.save_user_llm_settings(settings)
-                    st.success("✅ Setup-token Anthropic salvato!")
-                    st.rerun()
+                if settings.anthropic_setup_token:
+                    st.info("Setup-token legacy presente nel database, ma non viene usato dal runtime.")
 
             st.divider()
             st.header("📊 Gestione Dataset")

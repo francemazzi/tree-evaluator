@@ -37,6 +37,7 @@ services:
     container_name: tree-evaluator-streamlit
     ports:
       - "8501:8501"
+      - "53682-53690:53682-53690"
     volumes:
       - ./streamlit_app:/app/streamlit_app:ro
       - ./app:/app/app:ro
@@ -45,7 +46,7 @@ services:
     environment:
       - PYTHONPATH=/app
       - CHAT_DB_PATH=/app/data/chat_index.db
-      # LLM provider selection: openai | ollama
+      # LLM provider selection: openai | anthropic | ollama
       - LLM_PROVIDER=${LLM_PROVIDER:-openai}
       # Ollama settings (used when LLM_PROVIDER=ollama)
       # Default points to host Ollama (Docker Desktop): http://host.docker.internal:11434
