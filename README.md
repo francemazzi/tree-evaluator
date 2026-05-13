@@ -560,4 +560,6 @@ Current dataset: **BAUMKATOGD.csv** (Vienna trees cadastre)
 
 ### License
 
-MIT
+This project is licensed under the MIT License - see the [LICENSE](./LICENSE) file for details.
+
+Copyright (c) 2026 Frasma Studio
