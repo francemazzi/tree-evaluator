@@ -120,12 +120,11 @@ Use a project-local `.venv` (avoid mixing with system/Anaconda envs when running
 
 Screen recording of the Tree AI assistant (Streamlit chat and tools). Demo video: **H.264 MP4** (~66 MB on `main`, Git LFS) at `public/video/tree_ai.mp4`.
 
-<video controls playsinline muted preload="metadata" width="100%">
-  <source src="https://raw.githubusercontent.com/francemazzi/tree-evaluator/main/public/video/tree_ai.mp4" type="video/mp4">
-  <source src="https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4" type="video/mp4">
-</video>
+**[Play demo (MP4, ~66 MB) →](https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4)**
 
-If the player does not appear (some clients block inline video), open the file directly: **[raw MP4](https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4)** · [view in repo](https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4).
+<video src="https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4" controls muted playsinline width="640"></video>
+
+If the player still does not show in your browser, use the **Play demo** link above or [view the file in the repo](https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4) (GitHub’s own player).
 
 ## API
 
