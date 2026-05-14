@@ -118,11 +118,11 @@ Use a project-local `.venv` (avoid mixing with system/Anaconda envs when running
 
 ## Demo
 
-Screen recording of the Tree AI assistant (Streamlit chat and tools). **Watch on YouTube** (unlisted — works everywhere):
+Screen recording of the Tree AI assistant (Streamlit chat and tools). Plays inline on GitHub; fallback link to YouTube below.
 
-[![Tree AI demo — play on YouTube](https://img.youtube.com/vi/yhbtpuCZ--M/hqdefault.jpg)](https://youtu.be/yhbtpuCZ--M)
+<video src="https://github.com/francemazzi/tree-evaluator/raw/main/public/video/tree_ai.mp4" controls muted playsinline width="100%"></video>
 
-**[▶ Watch on YouTube](https://youtu.be/yhbtpuCZ--M)**
+**[▶ Watch on YouTube](https://youtu.be/yhbtpuCZ--M)** (unlisted — works everywhere, including clients that don't render inline video)
 
 ## API
 
