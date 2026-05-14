@@ -118,21 +118,11 @@ Use a project-local `.venv` (avoid mixing with system/Anaconda envs when running
 
 ## Demo
 
-Screen recording of the Tree AI assistant (Streamlit chat and tools). **H.264 MP4** (~66 MB on `main`, Git LFS) — `public/video/tree_ai.mp4`.
+Screen recording of the Tree AI assistant (Streamlit chat and tools). **Watch on YouTube** (unlisted — works everywhere):
 
-> **Why there is no player here:** GitHub’s README sanitizer **does not allow the HTML `<video>` tag** (it is removed), so the clip cannot play inline on this page. Use the links below to open GitHub’s **built-in player** on the file page — it **streams in the browser**. Avoid the **Raw** button if your browser would otherwise download the file.
+[![Tree AI demo — play on YouTube](https://img.youtube.com/vi/yhbtpuCZ--M/hqdefault.jpg)](https://youtu.be/yhbtpuCZ--M)
 
-<div align="center">
-  <a href="https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4">
-    <img src="https://img.shields.io/badge/Watch_demo-GitHub_player-0366d6?style=for-the-badge&logo=github" alt="Watch demo on GitHub (built-in player)">
-  </a>
-  <br><br>
-  <a href="https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4"><strong>Watch Tree AI demo (~66 MB)</strong></a>
-  <br>
-  <sub>Same link — opens the <code>blob</code> view with GitHub’s video controls.</sub>
-</div>
-
-**Optional (inline player in this README):** attach the MP4 once in an Issue or PR comment, copy the `https://github.com/user-attachments/assets/...` URL GitHub gives you, and reference that URL from the README (GitHub allows that CDN for playable media). Alternatively, add a short **GIF** under `public/video/` and show it with `![](...)`.
+**[▶ Watch on YouTube](https://youtu.be/yhbtpuCZ--M)**
 
 ## API
 
