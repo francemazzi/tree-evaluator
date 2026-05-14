@@ -118,13 +118,21 @@ Use a project-local `.venv` (avoid mixing with system/Anaconda envs when running
 
 ## Demo
 
-Screen recording of the Tree AI assistant (Streamlit chat and tools). Demo video: **H.264 MP4** (~66 MB on `main`, Git LFS) at `public/video/tree_ai.mp4`.
+Screen recording of the Tree AI assistant (Streamlit chat and tools). **H.264 MP4** (~66 MB on `main`, Git LFS) — `public/video/tree_ai.mp4`.
 
-**[Play demo (MP4, ~66 MB) →](https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4)**
+> **Why there is no player here:** GitHub’s README sanitizer **does not allow the HTML `<video>` tag** (it is removed), so the clip cannot play inline on this page. Use the links below to open GitHub’s **built-in player** on the file page — it **streams in the browser**. Avoid the **Raw** button if your browser would otherwise download the file.
 
-<video src="https://github.com/francemazzi/tree-evaluator/raw/refs/heads/main/public/video/tree_ai.mp4" controls muted playsinline width="640"></video>
+<div align="center">
+  <a href="https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4">
+    <img src="https://img.shields.io/badge/Watch_demo-GitHub_player-0366d6?style=for-the-badge&logo=github" alt="Watch demo on GitHub (built-in player)">
+  </a>
+  <br><br>
+  <a href="https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4"><strong>Watch Tree AI demo (~66 MB)</strong></a>
+  <br>
+  <sub>Same link — opens the <code>blob</code> view with GitHub’s video controls.</sub>
+</div>
 
-If the player still does not show in your browser, use the **Play demo** link above or [view the file in the repo](https://github.com/francemazzi/tree-evaluator/blob/main/public/video/tree_ai.mp4) (GitHub’s own player).
+**Optional (inline player in this README):** attach the MP4 once in an Issue or PR comment, copy the `https://github.com/user-attachments/assets/...` URL GitHub gives you, and reference that URL from the README (GitHub allows that CDN for playable media). Alternatively, add a short **GIF** under `public/video/` and show it with `![](...)`.
 
 ## API
 
