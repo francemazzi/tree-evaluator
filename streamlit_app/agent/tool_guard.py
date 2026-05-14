@@ -1,23 +1,24 @@
-"""Tool loop detection and recovery mechanisms."""
+"""Tool loop detection and recovery."""
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 
 from streamlit_app.agent.extraction import DataExtractor
+from streamlit_app.agent.tool_loop_formatters import (
+    format_chart_results,
+    format_co2_aggregate_results,
+    format_dataset_results,
+    format_map_results,
+)
+from streamlit_app.agent.tool_loop_replan import create_replan_prompt
 from streamlit_app.llm.tool_loop_guard import ToolLoopGuard
 
 
 class SemanticToolLoopDetector:
-    """Detects tool loops using semantic similarity instead of just counting.
-
-    This detector compares tool arguments to determine if calls are truly
-    repetitive (high similarity = loop) vs legitimate follow-up calls
-    (low similarity = different queries).
-    """
+    """Detects tool loops using semantic argument similarity."""
 
     SIMILARITY_THRESHOLD = 0.85  # Above this = considered same call
 
@@ -377,287 +378,21 @@ class ToolLoopManager:
         }
     
     def create_replan_prompt(self, state: dict, messages: Sequence[BaseMessage]) -> SystemMessage:
-        """Create a self-reflection prompt to recover from tool loops.
-        
-        Args:
-            state: Current agent state
-            messages: Current conversation messages
-            
-        Returns:
-            System message with replan prompt
-        """
-        current = int(state.get("tool_loop_replan_count") or 0)
-        details: Dict[str, Any] = state.get("tool_loop_details") or {}
-        tool_calls = details.get("tool_calls") or []
-        abuse_detected = details.get("abuse_detected", False)
-        call_count = details.get("call_count", 0)
-        
-        # Get detected language from state
-        detected_language = state.get("detected_language", "it")
-        if detected_language not in ["it", "en"]:
-            detected_language = "it"
+        """Create a self-reflection prompt to recover from tool loops."""
+        return create_replan_prompt(state, messages)
 
-        # Extract tool results from recent messages for self-evaluation
-        recent_tool_results = []
-        for msg in reversed(list(messages)[-15:]):
-            if isinstance(msg, ToolMessage):
-                content = str(msg.content)[:400]
-                recent_tool_results.append(content)
-        
-        if detected_language == "en":
-            tool_results_summary = "\n---\n".join(recent_tool_results[:3]) if recent_tool_results else "No recent results"
-            abused_tool = tool_calls[0].get("name") if tool_calls else "this tool"
-        else:
-            tool_results_summary = "\n---\n".join(recent_tool_results[:3]) if recent_tool_results else "Nessun risultato recente"
-            abused_tool = tool_calls[0].get("name") if tool_calls else "questo tool"
-
-        # If tool abuse detected (same tool called many times with different args)
-        if abuse_detected or call_count >= 5:
-            if detected_language == "en":
-                prompt = f"""🛑 **STOP - YOU HAVE CALLED `{abused_tool}` {call_count} TIMES**
-
-You are calling the same tool repeatedly with different queries, but you are not making progress.
-
-**RESULTS YOU HAVE ALREADY OBTAINED:**
-{tool_results_summary}
-
-**ANALYZE THE SITUATION:**
-- You have already searched {call_count} times - if you haven't found what you're looking for, it probably doesn't exist
-- Look at the results above: do they contain useful information?
-- Can you respond with what you have, even if partial?
-
-**CHOOSE ONE OF THESE ACTIONS (MANDATORY):**
-
-1. **RESPOND WITH WHAT YOU HAVE**: Use the papers/results you found to give an answer.
-2. **ADMIT LIMITATIONS AND OFFER ALTERNATIVES**: If you haven't found exactly what the user is looking for.
-3. **ASK FOR CLARIFICATION**: If you need more context.
-
-**⛔ YOU CANNOT call `{abused_tool}` again. You must respond now.**
-"""
-            else:
-                prompt = f"""🛑 **STOP - HAI CHIAMATO `{abused_tool}` {call_count} VOLTE**
-
-Stai chiamando lo stesso tool ripetutamente con query diverse, ma non stai facendo progressi.
-
-**RISULTATI CHE HAI GIÀ OTTENUTO:**
-{tool_results_summary}
-
-**ANALIZZA LA SITUAZIONE:**
-- Hai già cercato {call_count} volte - se non hai trovato quello che cerchi, probabilmente non c'è
-- Guarda i risultati sopra: contengono informazioni utili?
-- Puoi rispondere con quello che hai, anche se parziale?
-
-**SCEGLI UNA DI QUESTE AZIONI (OBBLIGATORIO):**
-
-1. **RISPONDI CON QUELLO CHE HAI**: Usa i paper/risultati che hai trovato per dare una risposta.
-2. **AMMETTI I LIMITI E OFFRI ALTERNATIVE**: Se non hai trovato esattamente quello che l'utente cerca.
-3. **CHIEDI CHIARIMENTI**: Se hai bisogno di più contesto.
-
-**⛔ NON PUOI chiamare di nuovo `{abused_tool}`. Devi rispondere ora.**
-"""
-        # Progressive assertiveness for exact fingerprint repeats
-        elif current < 2:
-            if detected_language == "en":
-                prompt = f"""🔄 **MOMENT OF SELF-REFLECTION**
-
-You have called the same tool multiple times. Before proceeding, ask yourself:
-
-**Results obtained so far:**
-{tool_results_summary}
-
-**Questions to ask yourself:**
-1. Do these results answer (even partially) the user's question?
-2. Am I looking for something that might not exist in the available data?
-3. Can I give a useful answer with what I have?
-
-**Possible actions:**
-A) **RESPOND**: Formulate a response with what you found (even if partial)
-B) **ASK**: Ask the user a specific question to understand better
-C) **CHANGE STRATEGY**: Use a different tool
-
-DO NOT call the same tool with the same query.
-"""
-            else:
-                prompt = f"""🔄 **MOMENTO DI AUTO-RIFLESSIONE**
-
-Hai chiamato lo stesso tool più volte. Prima di procedere, chiediti:
-
-**Risultati ottenuti finora:**
-{tool_results_summary}
-
-**Domande da porti:**
-1. Questi risultati rispondono (anche parzialmente) alla domanda dell'utente?
-2. Sto cercando qualcosa che potrebbe non esistere nei dati disponibili?
-3. Posso dare una risposta utile con quello che ho?
-
-**Azioni possibili:**
-A) **RISPONDO**: Formula una risposta con ciò che hai trovato (anche se parziale)
-B) **CHIEDO**: Fai una domanda specifica all'utente per capire meglio
-C) **CAMBIO STRATEGIA**: Usa un tool diverso
-
-NON richiamare lo stesso tool con la stessa query.
-"""
-        else:
-            if detected_language == "en":
-                prompt = f"""🛑 **STOP - MANDATORY RESPONSE**
-
-You have tried {current + 1} times without success. It's time to respond to the user.
-
-**Available results:**
-{tool_results_summary}
-
-**FINAL INSTRUCTIONS:**
-Write NOW a response to the user that:
-1. Honestly explains what you searched for and what you found (or didn't find)
-2. Offers concrete alternatives: "I didn't find X, but I can help you with Y..."
-3. Asks if the user wants to proceed differently
-
-**RESPOND NOW - Do not call other tools.**
-"""
-            else:
-                prompt = f"""🛑 **STOP - RISPOSTA OBBLIGATORIA**
-
-Hai tentato {current + 1} volte senza successo. È il momento di rispondere all'utente.
-
-**Risultati disponibili:**
-{tool_results_summary}
-
-**ISTRUZIONI FINALI:**
-Scrivi ORA una risposta all'utente che:
-1. Spiega onestamente cosa hai cercato e cosa hai (o non hai) trovato
-2. Offre alternative concrete: "Non ho trovato X, ma posso aiutarti con Y..."
-3. Chiede se l'utente vuole procedere diversamente
-
-**RISPONDI ORA - Non chiamare altri tool.**
-"""
-
-        return SystemMessage(content=prompt)
-    
     def _format_dataset_results(self, results: List[dict], messages: Sequence[BaseMessage], language: str = "it") -> str:
         """Format dataset results as user-friendly response."""
-        from streamlit_app.agent.response_builder import ResponseBuilder
-        return ResponseBuilder.format_dataset_results(results, messages, language)
-    
+        return format_dataset_results(results, messages, language)
+
     def _format_chart_results(self, chart_results: List[dict], messages: Sequence[BaseMessage]) -> str:
         """Format chart results as user-friendly response."""
-        if not chart_results:
-            return "Non sono riuscito a generare il grafico richiesto."
-        
-        # Get the most recent successful chart
-        chart = chart_results[0]
-        
-        # Build response with chart markers for UI parsing
-        chart_type = chart.get("chart_type", "grafico")
-        data_points = chart.get("data_points", 0)
-        title = chart.get("title", "Grafico")
-        description = chart.get("description", f"Grafico {chart_type} generato con successo")
-        
-        response = f"Ecco il {chart_type} che hai richiesto: **{title}**\n\n"
-        response += f"{description} con {data_points} punti dati.\n\n"
-        
-        # Add chart data markers for UI
-        chart_json_str = json.dumps(chart, ensure_ascii=False, indent=2)
-        response += f"\nCHART_DATA_START\n{chart_json_str}\nCHART_DATA_END\n"
-        
-        return response
-    
+        return format_chart_results(chart_results, messages)
+
     def _format_map_results(self, map_results: List[dict], messages: Sequence[BaseMessage]) -> str:
         """Format map results as user-friendly response."""
-        if not map_results:
-            return "Non sono riuscito a generare la mappa richiesta."
-        
-        # Get the most recent successful map
-        map_data = map_results[0]
-        
-        # Build response with map markers for UI parsing
-        map_type = map_data.get("map_type", "mappa")
-        data_points = map_data.get("data_points", 0)
-        title = map_data.get("title", "Mappa")
-        description = map_data.get("description", f"Mappa {map_type} generata con successo")
-        
-        response = f"Ecco la {map_type} che hai richiesto: **{title}**\n\n"
-        response += f"{description} con {data_points} punti visualizzati.\n\n"
-        
-        # Add map data markers for UI
-        map_json_str = json.dumps(map_data, ensure_ascii=False, indent=2)
-        response += f"\nMAP_DATA_START\n{map_json_str}\nMAP_DATA_END\n"
-        
-        return response
-    
+        return format_map_results(map_results, messages)
+
     def _format_co2_aggregate_results(self, result: dict, language: str = "it") -> str:
-        """Format CO2 aggregate results as user-friendly response with CARBON value prominently.
-        
-        Args:
-            result: CO2 aggregate result dictionary
-            language: Response language
-            
-        Returns:
-            Formatted response string
-        """
-        # If answer_hint is present, use it directly
-        if "answer_hint" in result:
-            return result["answer_hint"]
-        
-        # Otherwise build response manually
-        carbon_stock = result.get("carbon_stock_t", 0)
-        co2_stock = result.get("co2_stock_t", 0)
-        tree_count = result.get("tree_count", 0)
-        total_biomass = result.get("total_biomass_t", 0)
-        agb = result.get("above_ground_biomass_t", 0)
-        bgb = result.get("below_ground_biomass_t", 0)
-        species = result.get("dominant_species", "")
-        
-        # Get parameters
-        params = result.get("parameters", {})
-        cf = params.get("carbon_fraction", {}).get("value", 0.47)
-        rs = params.get("root_shoot_ratio", {}).get("value", 0.24)
-        
-        if language == "en":
-            response = f"""The carbon stock of {species} is **{carbon_stock:,.2f} t C** (tonnes of carbon).
-
-Details:
-- Trees analyzed: {tree_count:,}
-- Carbon stock: {carbon_stock:,.2f} t C
-- CO2 equivalent: {co2_stock:,.2f} t CO2
-- Total biomass: {total_biomass:,.2f} t
-  - Above-ground biomass (AGB): {agb:,.2f} t
-  - Below-ground biomass (BGB): {bgb:,.2f} t
-
-**Formulas used:**
-- AGB = 0.0673 × (WD × DBH² × H)^0.976 (Chave et al., 2014)
-- BGB = AGB × R/S
-- C = Biomass × CF
-- CO2 = C × (44/12)
-
-**Parameters:**
-- Wood density (WD): 0.6 g/cm³
-- Carbon fraction (CF): {cf} ({cf*100:.1f}%)
-- Root-to-shoot ratio (R/S): {rs}
-
-Tools used: calculate_co2_aggregate"""
-        else:
-            response = f"""Lo stock di carbonio di {species} è di **{carbon_stock:,.2f} t C** (tonnellate di carbonio).
-
-Dettagli:
-- Alberi analizzati: {tree_count:,}
-- Stock di carbonio: {carbon_stock:,.2f} t C
-- CO2 equivalente: {co2_stock:,.2f} t CO2
-- Biomassa totale: {total_biomass:,.2f} t
-  - Biomassa epigea (AGB): {agb:,.2f} t
-  - Biomassa ipogea (BGB): {bgb:,.2f} t
-
-**Formule utilizzate:**
-- AGB = 0.0673 × (WD × DBH² × H)^0.976 (Chave et al., 2014)
-- BGB = AGB × R/S
-- C = Biomassa × CF
-- CO2 = C × (44/12)
-
-**Parametri:**
-- Densità legno (WD): 0.6 g/cm³
-- Frazione carbonio (CF): {cf} ({cf*100:.1f}%)
-- Rapporto R/S: {rs}
-
-Tool utilizzati: calculate_co2_aggregate"""
-        
-        return response
-
+        """Format CO2 aggregate results as user-friendly response."""
+        return format_co2_aggregate_results(result, language)

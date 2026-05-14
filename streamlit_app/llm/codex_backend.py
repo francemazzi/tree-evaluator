@@ -40,13 +40,7 @@ CODEX_OAUTH_SUPPORTED_MODELS: tuple[str, ...] = (
 
 
 def resolve_codex_oauth_model(model: Optional[str]) -> str:
-    """Return a Codex/OAuth-compatible model name, falling back to the default.
-
-    The ChatGPT backend rejects platform-only models (e.g. ``gpt-5``,
-    ``gpt-4o``) with a 400 ``unsupported-model`` error. To keep the chat
-    usable when the persisted preference is incompatible we silently swap to
-    ``CODEX_OAUTH_DEFAULT_MODEL`` and log the substitution.
-    """
+    """Return a Codex/OAuth-compatible model name, falling back to the default."""
     candidate = (model or "").strip()
     if not candidate:
         return CODEX_OAUTH_DEFAULT_MODEL

@@ -60,14 +60,7 @@ class DataExtractor:
     
     @staticmethod
     def extract_papers(messages: Sequence[BaseMessage]) -> List[dict]:
-        """Extract paper results from ToolMessages for search_scientific_papers.
-        
-        Args:
-            messages: Conversation messages to extract from
-            
-        Returns:
-            List of paper dictionaries with title, authors, abstract, link, source
-        """
+        """Extract paper results from ToolMessages for search_scientific_papers."""
         papers = []
         errors = []
         seen_titles = set()  # Avoid duplicates
@@ -154,19 +147,7 @@ class DataExtractor:
     
     @staticmethod
     def extract_key_facts(messages: Sequence[BaseMessage]) -> List[str]:
-        """Extract key facts from conversation for context preservation.
-        
-        Identifies important data points like:
-        - District numbers with counts
-        - Species names with counts
-        - Specific values mentioned (ages, sizes, etc.)
-        
-        Args:
-            messages: Conversation messages to extract from
-            
-        Returns:
-            List of fact strings
-        """
+        """Extract key facts from conversation for context preservation."""
         facts = []
         
         for msg in messages:
@@ -408,4 +389,3 @@ class DataExtractor:
                 break  # Take only the most recent valid result
         
         return co2_results
-

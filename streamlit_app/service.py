@@ -6,6 +6,7 @@ from typing import Any, List, Optional, Tuple
 
 from streamlit_app.models import ChatMessage, Conversation, UserLlmSettings
 from streamlit_app.repository import ChatRepository
+from streamlit_app.service_agent_factory import get_or_create_agent
 
 logger = logging.getLogger(__name__)
 
@@ -174,145 +175,8 @@ class ChatService:
         return message
 
     def _get_or_create_agent(self, user_id: str, openai_api_key: Optional[str] = None):
-        """Lazy-load the LangGraph agent using saved per-user preferences (OpenAI/Ollama)."""
-        preferences = self.get_user_llm_settings(user_id)
-        # If UI passed a key explicitly, it overrides persisted key.
-        if openai_api_key is not None:
-            preferences.openai_api_key = openai_api_key
-
-        openai_oauth_tokens: dict[str, Any] = {}
-        anthropic_oauth_tokens: dict[str, Any] = {}
-        if preferences.provider == "openai":
-            if preferences.openai_auth_method == "codex_oauth":
-                openai_oauth_tokens = self._resolve_openai_oauth_tokens(preferences)
-                if not openai_oauth_tokens.get("access_token"):
-                    return None
-                self._agent = None
-            elif not preferences.openai_api_key:
-                return None
-        elif preferences.provider == "anthropic":
-            if preferences.anthropic_auth_method == "oauth":
-                anthropic_oauth_tokens = self._resolve_anthropic_oauth_tokens(preferences)
-                if not anthropic_oauth_tokens.get("access_token"):
-                    return None
-                self._agent = None
-            elif not preferences.anthropic_api_key:
-                return None
-            
-        # Se agent già esiste, ritorna quello esistente
-        if self._agent is not None:
-            return self._agent
-            
-        # Crea nuovo agent
-        try:
-            from streamlit_app.agent import TreeEvaluatorAgent
-            import streamlit as st
-            from pathlib import Path
-            
-            # Check if custom dataset is configured
-            custom_db_path = st.session_state.get("custom_db_path", None)
-            custom_table_name = st.session_state.get("custom_table_name", None)
-            # Read from stored_data_description (saved value) or fallback to data_description_input (widget value)
-            data_description = st.session_state.get("stored_data_description", st.session_state.get("data_description_input", ""))
-            dataset_metadata = st.session_state.get("dataset_metadata", {}) or {}
-            dataset_column_roles = (
-                dataset_metadata.get("profile", {}).get("roles", {})
-                if isinstance(dataset_metadata, dict)
-                else {}
-            )
-            profile_summary = dataset_metadata.get("profile_summary", "")
-            if profile_summary:
-                data_description = (
-                    f"{data_description.strip()}\n\nProfilo dataset:\n{profile_summary}"
-                    if data_description and data_description.strip()
-                    else f"Profilo dataset:\n{profile_summary}"
-                )
-            selected_preset = st.session_state.get("selected_preset", "vienna")
-            openai_kwargs = {
-                "openai_api_key": (
-                    preferences.openai_api_key or None
-                    if preferences.openai_auth_method == "api_key"
-                    else None
-                ),
-                "openai_auth_method": preferences.openai_auth_method,
-                "openai_codex_access_token": str(openai_oauth_tokens.get("access_token") or "") or None,
-                "openai_codex_account_id": str(openai_oauth_tokens.get("account_id") or "") or None,
-                "openai_codex_is_fedramp": bool(openai_oauth_tokens.get("is_fedramp_account") or False),
-            }
-            anthropic_kwargs = {
-                "anthropic_auth_method": preferences.anthropic_auth_method,
-                "anthropic_api_key": (
-                    preferences.anthropic_api_key or None
-                    if preferences.anthropic_auth_method == "api_key"
-                    else None
-                ),
-                "anthropic_oauth_access_token": str(anthropic_oauth_tokens.get("access_token") or "") or None,
-                "anthropic_chat_model": preferences.anthropic_chat_model,
-            }
-            
-            # Inizializza agent con configurazione dataset
-            if custom_db_path and custom_table_name:
-                # Custom uploaded CSV
-                self._agent = TreeEvaluatorAgent(
-                    **openai_kwargs,
-                    **anthropic_kwargs,
-                    provider=preferences.provider,
-                    openai_chat_model=preferences.openai_chat_model,
-                    openai_embedding_model=preferences.openai_embedding_model,
-                    ollama_base_url=preferences.ollama_base_url,
-                    ollama_chat_model=preferences.ollama_chat_model,
-                    ollama_embedding_model=preferences.ollama_embedding_model,
-                    custom_db_path=Path(custom_db_path),
-                    custom_table_name=custom_table_name,
-                    dataset_column_roles=dataset_column_roles,
-                    data_description=data_description,
-                    interface_language=preferences.interface_language
-                )
-            elif selected_preset == "milano":
-                # Milano preset dataset
-                self._agent = TreeEvaluatorAgent(
-                    **openai_kwargs,
-                    **anthropic_kwargs,
-                    provider=preferences.provider,
-                    openai_chat_model=preferences.openai_chat_model,
-                    openai_embedding_model=preferences.openai_embedding_model,
-                    ollama_base_url=preferences.ollama_base_url,
-                    ollama_chat_model=preferences.ollama_chat_model,
-                    ollama_embedding_model=preferences.ollama_embedding_model,
-                    dataset_preset="milano",
-                    interface_language=preferences.interface_language
-                )
-            else:
-                # Default: Vienna dataset
-                self._agent = TreeEvaluatorAgent(
-                    **openai_kwargs,
-                    **anthropic_kwargs,
-                    provider=preferences.provider,
-                    openai_chat_model=preferences.openai_chat_model,
-                    openai_embedding_model=preferences.openai_embedding_model,
-                    ollama_base_url=preferences.ollama_base_url,
-                    ollama_chat_model=preferences.ollama_chat_model,
-                    ollama_embedding_model=preferences.ollama_embedding_model,
-                    interface_language=preferences.interface_language
-                )
-            
-            return self._agent
-            
-        except ImportError as e:
-            import streamlit as st
-            st.error(f"❌ Errore import dipendenze: {e}\nInstalla: pip install -r requirements.txt")
-            logger.error("Import error: %s", e)
-            return None
-        except ValueError as e:
-            import streamlit as st
-            st.error(f"❌ Credenziali LLM non valide: {e}")
-            logger.error("ValueError: %s", e)
-            return None
-        except Exception as e:
-            import streamlit as st
-            st.error(f"❌ Errore inizializzazione agent: {e}")
-            logger.exception("Agent init error: %s", e)
-            return None
+        """Lazy-load the LangGraph agent using saved per-user preferences."""
+        return get_or_create_agent(self, user_id=user_id, openai_api_key=openai_api_key)
 
     def _generate_fake_reply(self, user_id: str, conversation_id: int, last_user_message: str, openai_api_key: Optional[str] = None) -> ChatMessage:
         """Generate reply using LangGraph agent or fallback to demo response."""

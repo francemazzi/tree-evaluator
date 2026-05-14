@@ -1,14 +1,4 @@
-"""Tree Evaluator Agent - Main orchestrator for tree analysis tools.
-
-This module provides the main TreeEvaluatorAgent class that coordinates
-multiple specialized tools for tree analysis, CO2 calculations, and dataset queries.
-
-The agent is built on LangGraph and uses modular components:
-- ToolInitializer: Handles tool setup and configuration
-- GraphBuilder: Constructs the LangGraph workflow
-- QueryOptimizer: Optimizes queries and plans tool execution
-- BudgetHandler: Manages budget constraints and summaries
-"""
+"""LangGraph orchestrator for tree analysis tools."""
 
 from __future__ import annotations
 
@@ -22,16 +12,19 @@ from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt.tool_node import ToolNode
 
-from streamlit_app.agent.budget import AgentBudget
 from streamlit_app.agent.budget_handler import BudgetHandler, get_detected_language
+from streamlit_app.agent.chat_runtime import chat as run_chat
+from streamlit_app.agent.chat_runtime import stream_chat as run_stream_chat
 from streamlit_app.agent.context_manager import ConversationContextManager
 from streamlit_app.agent.extraction import DataExtractor
 from streamlit_app.agent.formatting import ItalianNumberFormatter
 from streamlit_app.agent.graph_builder import GraphBuilder
-from streamlit_app.agent.prompts import SystemPrompts
+from streamlit_app.agent.initial_state import create_initial_state
+from streamlit_app.agent.message_pipeline import build_minimal_messages, prepare_messages_for_llm
+from streamlit_app.agent.plain_chat_factory import create_chat_without_tools
 from streamlit_app.agent.query_optimizer import QueryOptimizer
 from streamlit_app.agent.state import AgentState
-from streamlit_app.agent.streaming_handler import StreamingHandler
+from streamlit_app.agent.stream_events import process_stream_event
 from streamlit_app.agent.failure_tracker_adapter import FailureTrackerAdapter
 from streamlit_app.agent.memory import PersistentMemory
 from streamlit_app.agent.tool_initializer import ToolInitializer
@@ -214,8 +207,11 @@ class TreeEvaluatorAgent:
         messages = state["messages"]
         detected_language = get_detected_language(state, self._interface_language)
 
-        # Prepare messages with system prompt
-        messages = self._prepare_messages_for_llm(messages, detected_language)
+        messages = prepare_messages_for_llm(
+            messages,
+            detected_language,
+            self._memory.get_memory_for_prompt(max_chars=2000),
+        )
 
         self._transcript.log_llm_call(self._primary_model, len(messages))
         try:
@@ -269,86 +265,6 @@ class TreeEvaluatorAgent:
                 return list(msg.tool_calls)
         return []
 
-    def _prepare_messages_for_llm(
-        self, messages: List[BaseMessage], language: str
-    ) -> List[BaseMessage]:
-        """Prepare messages for LLM invocation with proper truncation."""
-        # Remove existing system messages and add fresh one
-        messages = [m for m in messages if not isinstance(m, SystemMessage)]
-        system_prompt = SystemPrompts.get_system_prompt(language)
-        memory_section = self._memory.get_memory_for_prompt(max_chars=2000)
-        if memory_section:
-            system_prompt = system_prompt + "\n\n" + memory_section
-        system_msg = SystemMessage(content=system_prompt)
-        messages = [system_msg] + list(messages)
-
-        # Build minimal message list
-        truncate_label = "... [truncated]" if language == "en" else "... [troncato]"
-        minimal_messages = self._build_minimal_messages(messages, truncate_label)
-
-        return minimal_messages
-
-    def _build_minimal_messages(
-        self, messages: List[BaseMessage], truncate_label: str
-    ) -> List[BaseMessage]:
-        """Build minimal message list for LLM to save tokens."""
-        system_messages = [m for m in messages if isinstance(m, SystemMessage)]
-
-        # Find last user message
-        last_user_msg = None
-        for msg in reversed(messages):
-            if isinstance(msg, HumanMessage):
-                last_user_msg = msg
-                break
-
-        # Find last AIMessage with tool_calls and its ToolMessages
-        last_ai_with_tools = None
-        tool_messages_after_ai = []
-
-        for i, msg in enumerate(messages):
-            if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
-                last_ai_with_tools = msg
-                tool_messages_after_ai = []
-                for j in range(i + 1, len(messages)):
-                    if isinstance(messages[j], ToolMessage):
-                        tool_messages_after_ai.append(messages[j])
-                    elif isinstance(messages[j], AIMessage):
-                        break
-
-        # Build minimal list
-        minimal_messages = []
-        minimal_messages.extend(system_messages[:1])
-        if last_user_msg:
-            minimal_messages.append(last_user_msg)
-
-        if last_ai_with_tools:
-            minimal_messages.append(last_ai_with_tools)
-            minimal_messages.extend(tool_messages_after_ai)
-
-        # Truncate messages
-        def truncate(msg: BaseMessage, max_len: int) -> BaseMessage:
-            content = (msg.content or "") if hasattr(msg, "content") else ""
-            if len(content) > max_len:
-                content = content[:max_len] + truncate_label
-            if isinstance(msg, HumanMessage):
-                return HumanMessage(content=content)
-            if isinstance(msg, AIMessage):
-                return AIMessage(content=content, tool_calls=getattr(msg, "tool_calls", None) or [])
-            if isinstance(msg, SystemMessage):
-                return SystemMessage(content=content)
-            if isinstance(msg, ToolMessage):
-                return ToolMessage(
-                    content=content,
-                    tool_call_id=getattr(msg, "tool_call_id", ""),
-                    name=getattr(msg, "name", ""),
-                )
-            return msg
-
-        return [
-            truncate(m, 1500 if isinstance(m, ToolMessage) else 400)
-            for m in minimal_messages
-        ]
-
     def _handle_llm_error(
         self, error: Exception, messages: List[BaseMessage], language: str
     ) -> AIMessage:
@@ -361,7 +277,7 @@ class TreeEvaluatorAgent:
             try:
                 fallback_llm = self._fallback_llm.bind_tools(self._tools)
                 truncate_label = "... [truncated]" if language == "en" else "... [troncato]"
-                minimal = self._build_minimal_messages(messages, truncate_label)
+                minimal = build_minimal_messages(messages, truncate_label)
                 return fallback_llm.invoke(minimal)
             except Exception:
                 raise
@@ -417,18 +333,7 @@ class TreeEvaluatorAgent:
         Returns:
             Agent response as string
         """
-        messages = self._convert_history_to_messages(history)
-        messages.append(HumanMessage(content=message))
-        self._transcript.log_user_message(message)
-
-        initial_state = self._create_initial_state(messages)
-        result = self._graph.invoke(initial_state, config={"recursion_limit": 30})
-
-        final_message = result["messages"][-1]
-        response_text = final_message.content if isinstance(final_message, AIMessage) else str(final_message.content)
-        self._transcript.log_agent_response(response_text[:300] if response_text else "")
-        self._save_response_facts(response_text)
-        return response_text
+        return run_chat(self, message, history)
 
     def stream_chat(self, message: str, history: Optional[List[dict]] = None):
         """Stream chat response with LangGraph streaming.
@@ -440,60 +345,7 @@ class TreeEvaluatorAgent:
         Yields:
             Dict with 'type' and 'content' keys
         """
-        messages = self._convert_history_to_messages(history)
-        messages.append(HumanMessage(content=message))
-        self._transcript.log_user_message(message)
-
-        final_response = None
-        retry_count = 0
-        max_retries = 1
-        chart_data_json = None
-        map_data_json = None
-
-        initial_state = self._create_initial_state(messages)
-
-        for event in self._graph.stream(
-            initial_state,
-            config={"recursion_limit": 30},
-            stream_mode="updates",
-        ):
-            current_language = self._interface_language
-            if "detected_language" in event.get("query_optimizer", {}):
-                current_language = event["query_optimizer"].get(
-                    "detected_language", self._interface_language
-                )
-
-            for node_name, node_output in event.items():
-                result = self._process_stream_event(
-                    node_name, node_output, current_language, len(messages)
-                )
-
-                if result:
-                    if result.get("type") == "final_response":
-                        final_response = result.get("content")
-                    elif "final_response" in result:
-                        final_response = result.pop("final_response")
-                        if result.get("type"):
-                            yield result
-                    elif result.get("type") == "chart_data":
-                        chart_data_json = result.get("data")
-                    elif result.get("type") == "map_data":
-                        map_data_json = result.get("data")
-                    elif result.get("type") == "reasoning":
-                        yield result
-
-        # Yield final response
-        if final_response:
-            self._transcript.log_agent_response(final_response[:300])
-
-            if chart_data_json and "CHART_DATA_START" not in final_response:
-                final_response = f"{final_response}\n\nCHART_DATA_START\n{chart_data_json}\nCHART_DATA_END"
-
-            if map_data_json and "MAP_DATA_START" not in final_response:
-                final_response = f"{final_response}\n\nMAP_DATA_START\n{map_data_json}\nMAP_DATA_END"
-
-            self._save_response_facts(final_response)
-            yield {"type": "response", "content": final_response}
+        yield from run_stream_chat(self, message, history)
 
     def _save_response_facts(self, response_text: str) -> None:
         """Extract key facts from agent response and save to persistent memory."""
@@ -517,37 +369,7 @@ class TreeEvaluatorAgent:
         self, node_name: str, node_output: Any, language: str, msg_count: int
     ) -> Optional[Dict]:
         """Process a single streaming event."""
-        if node_name == "language_detector":
-            return StreamingHandler.handle_language_detector_event(node_output, language)
-        elif node_name == "context_manager":
-            return StreamingHandler.handle_context_manager_event(node_output, msg_count, language)
-        elif node_name == "query_optimizer":
-            return StreamingHandler.handle_query_optimizer_event(node_output, language)
-        elif node_name == "agent":
-            result = StreamingHandler.handle_agent_event(node_output, language)
-            return result
-        elif node_name == "tools":
-            result, chart_json, map_json = StreamingHandler.handle_tools_event(node_output, language)
-            if chart_json:
-                return {"type": "chart_data", "data": chart_json}
-            if map_json:
-                return {"type": "map_data", "data": map_json}
-            return result
-        elif node_name == "budget_check":
-            return StreamingHandler.handle_budget_check_event(node_output, language)
-        elif node_name == "tool_loop_guard":
-            return StreamingHandler.handle_tool_loop_guard_event(node_output, language)
-        elif node_name == "tool_loop_replanner":
-            from streamlit_app.agent.translations import get_translation
-            return {
-                "type": "reasoning",
-                "content": f"{get_translation('replanning', language)}\n\n{get_translation('reformulating_step', language)}\n",
-            }
-        elif node_name == "validator":
-            result, _ = StreamingHandler.handle_validator_event(node_output, 0, 1, language)
-            return result
-
-        return None
+        return process_stream_event(node_name, node_output, language, msg_count)
 
     def _convert_history_to_messages(
         self, history: Optional[List[dict]]
@@ -564,74 +386,10 @@ class TreeEvaluatorAgent:
 
     def _create_initial_state(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """Create the initial state for graph invocation."""
-        initial_budget = AgentBudget()
-        return {
-            "messages": messages,
-            "retry_count": 0,
-            "tool_last_fingerprint": None,
-            "tool_repeat_count": 0,
-            "tool_loop_detected": False,
-            "tool_loop_action": "continue",
-            "tool_loop_details": None,
-            "tool_loop_replan_count": 0,
-            "total_tool_calls": 0,
-            "tool_call_counts": {},
-            "budget": initial_budget.to_dict(),
-            "budget_exceeded": False,
-            "budget_status": None,
-            "detected_language": self._interface_language,
-            "tool_plan": None,
-            "available_tools_summary": None,
-        }
+        return create_initial_state(messages, self._interface_language)
 
     # ===== Utility Methods =====
 
     def _create_chat_without_tools(self, model: str, temperature: float) -> Any:
         """Create a plain chat model (no tool binding) for internal prompts."""
-        if self._llm_settings.provider == LlmProvider.OLLAMA:
-            from langchain_ollama import ChatOllama
-            return ChatOllama(
-                model=model,
-                temperature=temperature,
-                base_url=self._llm_settings.ollama_base_url,
-            )
-
-        if self._llm_settings.provider == LlmProvider.ANTHROPIC:
-            if self._llm_settings.anthropic_auth_method == "oauth":
-                from streamlit_app.llm.anthropic_backend import (
-                    ClaudeOAuthChatModel,
-                    resolve_claude_oauth_model,
-                )
-
-                return ClaudeOAuthChatModel(
-                    model_name=resolve_claude_oauth_model(model),
-                    access_token=self._llm_settings.anthropic_oauth_access_token or "",
-                    temperature=temperature,
-                )
-
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(
-                model=model,
-                temperature=temperature,
-                anthropic_api_key=self._llm_settings.anthropic_api_key,
-            )
-
-        if self._llm_settings.openai_auth_method == "codex_oauth":
-            from streamlit_app.llm.codex_backend import (
-                ChatGPTCodexBackendChatModel,
-                resolve_codex_oauth_model,
-            )
-
-            return ChatGPTCodexBackendChatModel(
-                model_name=resolve_codex_oauth_model(model),
-                access_token=self._llm_settings.openai_codex_access_token or "",
-                account_id=self._llm_settings.openai_codex_account_id,
-                is_fedramp_account=self._llm_settings.openai_codex_is_fedramp,
-            )
-
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=model,
-            temperature=temperature,
-            api_key=self._llm_settings.openai_api_key,
-        )
+        return create_chat_without_tools(self._llm_settings, model, temperature)

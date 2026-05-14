@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import json
-import logging
-import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Literal, Optional, Type
 
-import plotly.express as px
-import plotly.graph_objects as go
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 
+from streamlit_app.tools.chart_queries import get_predefined_chart_query
+from streamlit_app.tools.chart_rendering import create_chart
+from streamlit_app.tools.chart_sql_translator import translate_to_chart_sql
 from streamlit_app.tools.sql_validator import SQLValidator, quote_sql_identifier
-
-logger = logging.getLogger(__name__)
 
 ALLOWED_CHART_TYPES = {"bar", "pie", "line", "scatter", "histogram", "box"}
 
@@ -116,115 +113,12 @@ class ChartGenerationTool(BaseTool):
     
     def _get_predefined_query(self, data_query: str, chart_type: str) -> Optional[Dict[str, Any]]:
         """Get predefined query for common requests as fallback."""
-        data_query_lower = data_query.lower()
-        table = self._table_name
-        columns = self._get_table_columns()
-        requested_limit = self._extract_requested_limit(data_query)
-        
-        # Species composition/distribution queries
-        if (
-            "genus_species" in columns
-            and chart_type == "pie"
-            and any(keyword in data_query_lower for keyword in ["specie", "species", "composizione", "distribuzione"])
-        ):
-            return {
-                "sql": f"""WITH species_counts AS (
-                    SELECT genus_species, COUNT(*) AS count
-                    FROM {table}
-                    WHERE genus_species IS NOT NULL AND genus_species <> ''
-                    GROUP BY genus_species
-                ),
-                ranked AS (
-                    SELECT genus_species, count, ROW_NUMBER() OVER (ORDER BY count DESC) AS rn
-                    FROM species_counts
-                )
-                SELECT
-                    CASE WHEN rn <= {requested_limit} THEN genus_species ELSE 'Altro' END AS category,
-                    SUM(count) AS count
-                FROM ranked
-                GROUP BY CASE WHEN rn <= {requested_limit} THEN genus_species ELSE 'Altro' END
-                ORDER BY
-                    CASE WHEN category = 'Altro' THEN 1 ELSE 0 END,
-                    count DESC""",
-                "x_column": "category",
-                "y_column": "count",
-                "suggested_title": "Composizione delle Specie di Alberi",
-                "x_label": "Specie",
-                "y_label": "Numero di Alberi"
-            }
-
-        if (
-            "genus_species" in columns
-            and chart_type == "bar"
-            and any(keyword in data_query_lower for keyword in ["specie", "species", "top", "comuni", "diffuse"])
-        ):
-            return {
-                "sql": f"""SELECT genus_species AS category, COUNT(*) AS count
-                         FROM {table}
-                         WHERE genus_species IS NOT NULL AND genus_species <> ''
-                         GROUP BY genus_species
-                         ORDER BY count DESC
-                         LIMIT {requested_limit}""",
-                "x_column": "category",
-                "y_column": "count",
-                "suggested_title": f"Top {requested_limit} Specie Piu' Comuni",
-                "x_label": "Specie",
-                "y_label": "Numero di Alberi"
-            }
-        
-        # District distribution
-        if "district" in columns and any(keyword in data_query_lower for keyword in ["distretto", "district", "quartiere", "municipio"]):
-            if chart_type == "pie":
-                sql = f"""SELECT district AS category, COUNT(*) as count
-                         FROM {table}
-                         WHERE district IS NOT NULL AND district <> ''
-                         GROUP BY district
-                         ORDER BY count DESC"""
-            else:  # bar
-                sql = f"""SELECT district AS category, COUNT(*) as count
-                         FROM {table}
-                         WHERE district IS NOT NULL AND district <> ''
-                         GROUP BY district
-                         ORDER BY count DESC"""
-            
-            return {
-                "sql": sql,
-                "x_column": "category",
-                "y_column": "count",
-                "suggested_title": "Distribuzione Alberi per Distretto",
-                "x_label": "Distretto",
-                "y_label": "Numero di Alberi"
-            }
-
-        if "plant_year" in columns and chart_type == "histogram" and any(keyword in data_query_lower for keyword in ["eta", "età", "age"]):
-            from datetime import datetime
-            current_year = datetime.now().year
-            return {
-                "sql": f"""SELECT ({current_year} - plant_year) as age
-                         FROM {table}
-                         WHERE plant_year IS NOT NULL AND plant_year > 0 AND plant_year < {current_year}""",
-                "x_column": "age",
-                "y_column": None,
-                "suggested_title": "Distribuzione dell'Eta' degli Alberi",
-                "x_label": "Eta' (anni)",
-                "y_label": "Frequenza"
-            }
-        
-        return None
-
-    def _extract_requested_limit(self, data_query: str, default: int = 10, maximum: int = 50) -> int:
-        """Extract an explicit top-N limit from a natural-language chart request."""
-        query = data_query.lower()
-        patterns = [
-            r"\btop\s+(\d+)\b",
-            r"\bprim(?:e|i)\s+(\d+)\b",
-            r"\b(\d+)\s+(?:specie|species|categorie|distretti|district|municipi)\b",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, query)
-            if match:
-                return max(1, min(int(match.group(1)), maximum))
-        return default
+        return get_predefined_chart_query(
+            data_query=data_query,
+            chart_type=chart_type,
+            table_name=self._table_name,
+            columns=self._get_table_columns(),
+        )
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
@@ -269,160 +163,21 @@ class ChartGenerationTool(BaseTool):
         return schema[0] if schema else f"Table: {self._table_name}"
     
     def _translate_to_chart_sql(
-        self, 
-        data_query: str, 
+        self,
+        data_query: str,
         chart_type: str,
         schema_info: str,
     ) -> Dict[str, Any]:
         """Translate natural language data query to SQL optimized for chart type."""
-        from datetime import datetime
-        import math
-        
-        current_year = datetime.now().year
-        
-        prompt = f"""You are a SQL expert for data visualization. Generate a SQL query for creating a {chart_type} chart.
+        return translate_to_chart_sql(
+            llm=self._llm,
+            fallback_llm=self._fallback_llm,
+            table_name=self._table_name,
+            data_query=data_query,
+            chart_type=chart_type,
+            schema_info=schema_info,
+        )
 
-DATABASE SCHEMA:
-{schema_info}
-
-IMPORTANT RULES:
-1. Current year is {current_year}
-2. Table name is: {self._table_name}
-3. DBH = trunk_circumference / {math.pi} when trunk_circumference exists; otherwise use a diameter column if present.
-4. Age = {current_year} - plant_year when plant_year exists.
-5. Return data optimized for {chart_type} chart
-6. For bar/pie charts: return category and count/value columns named exactly "category" and "count"
-7. For line charts: return time-based x-axis and y-axis values
-8. For scatter: return two numeric columns
-9. For histogram: return the raw values to be binned
-10. For box plots: return category and numeric value columns
-11. For pie charts showing species: ALWAYS use TOP 15 + "Altro" pattern when genus_species exists
-12. ALWAYS filter out NULL and empty string values with: WHERE column IS NOT NULL AND column <> ''
-13. For pie/bar charts: limit to max 15-20 main categories, group rest as "Altro"
-14. Use ONLY the table {self._table_name}; do not reference other tables.
-
-USER REQUEST: {data_query}
-CHART TYPE: {chart_type}
-
-Return ONLY a valid JSON object with:
-{{
-    "sql": "the SQL query",
-    "x_column": "name of x-axis column",
-    "y_column": "name of y-axis column (or null for histogram)",
-    "suggested_title": "suggested chart title in Italian",
-    "x_label": "suggested x-axis label in Italian",
-    "y_label": "suggested y-axis label in Italian"
-}}
-
-CRITICAL EXAMPLES:
-
-Request: "Composizione specie" OR "distribuzione specie" OR "specie di piante"
-Chart: pie
-Response:
-{{
-    "sql": "WITH species_counts AS (SELECT genus_species, COUNT(*) AS count FROM {self._table_name} WHERE genus_species IS NOT NULL AND genus_species <> '' GROUP BY genus_species), ranked AS (SELECT genus_species, count, ROW_NUMBER() OVER (ORDER BY count DESC) AS rn FROM species_counts) SELECT CASE WHEN rn <= 15 THEN genus_species ELSE 'Altro' END AS category, SUM(count) AS count FROM ranked GROUP BY CASE WHEN rn <= 15 THEN genus_species ELSE 'Altro' END ORDER BY CASE WHEN category = 'Altro' THEN 1 ELSE 0 END, count DESC",
-    "x_column": "category",
-    "y_column": "count",
-    "suggested_title": "Composizione delle Specie di Alberi",
-    "x_label": "Specie",
-    "y_label": "Numero di Alberi"
-}}
-
-Request: "Numero di alberi per distretto"
-Chart: bar
-Response:
-{{
-    "sql": "SELECT district AS category, COUNT(*) as count FROM {self._table_name} WHERE district IS NOT NULL AND district <> '' GROUP BY district ORDER BY count DESC",
-    "x_column": "category",
-    "y_column": "count",
-    "suggested_title": "Numero di Alberi per Distretto",
-    "x_label": "Distretto",
-    "y_label": "Numero di Alberi"
-}}
-
-Request: "Top 10 specie più comuni"
-Chart: bar
-Response:
-{{
-    "sql": "SELECT genus_species AS category, COUNT(*) as count FROM {self._table_name} WHERE genus_species IS NOT NULL AND genus_species <> '' GROUP BY genus_species ORDER BY count DESC LIMIT 10",
-    "x_column": "category",
-    "y_column": "count",
-    "suggested_title": "Top 10 Specie Più Comuni",
-    "x_label": "Specie",
-    "y_label": "Numero di Alberi"
-}}
-
-Request: "Distribuzione età degli alberi"
-Chart: histogram
-Response:
-{{
-    "sql": "SELECT ({current_year} - plant_year) as age FROM {self._table_name} WHERE plant_year > 0 AND plant_year < {current_year}",
-    "x_column": "age",
-    "y_column": null,
-    "suggested_title": "Distribuzione dell'Età degli Alberi",
-    "x_label": "Età (anni)",
-    "y_label": "Frequenza"
-}}
-
-Now generate the query for: {data_query}
-
-Remember: Return ONLY valid JSON, no markdown, no explanation."""
-        
-        if not self._llm:
-            raise ValueError("LLM is required. Initialize ChartGenerationTool with an LLM instance.")
-
-        def _invoke_with_fallback() -> Any:
-            try:
-                return self._llm.invoke(prompt)
-            except Exception as e:
-                if "rate_limit" in str(e).lower() or "429" in str(e) or "Request too large" in str(e):
-                    try:
-                        if self._fallback_llm:
-                            return self._fallback_llm.invoke(prompt)
-                    except Exception:
-                        pass
-                raise
-
-        response = _invoke_with_fallback()
-        response_text = response.content if hasattr(response, 'content') else str(response)
-        
-        # Clean up and parse JSON - improved robustness
-        response_text = response_text.strip()
-        
-        # Remove markdown code blocks
-        if '```json' in response_text:
-            response_text = response_text.split('```json')[1].split('```')[0].strip()
-        elif '```' in response_text:
-            # Try to extract JSON between any code blocks
-            parts = response_text.split('```')
-            for part in parts:
-                part = part.strip()
-                if part and (part.startswith('{') or part.startswith('[')):
-                    response_text = part
-                    break
-        
-        # Remove any leading/trailing text that's not JSON
-        if '{' in response_text:
-            start_idx = response_text.index('{')
-            end_idx = response_text.rindex('}') + 1
-            response_text = response_text[start_idx:end_idx]
-        
-        try:
-            parsed = json.loads(response_text)
-        except json.JSONDecodeError as e:
-            # Log the problematic response for debugging
-            logger.warning("Failed to parse LLM response: %s...", response_text[:200])
-            logger.warning("JSON error: %s", e)
-            raise
-        
-        # Validate required fields
-        required_fields = ["sql", "x_column", "suggested_title", "x_label", "y_label"]
-        missing_fields = [f for f in required_fields if f not in parsed]
-        if missing_fields:
-            raise KeyError(f"Missing required fields: {', '.join(missing_fields)}")
-        
-        return parsed
-    
     def _execute_query(self, conn: sqlite3.Connection, sql: str) -> list:
         """Execute SQL query and return results."""
         cursor = conn.cursor()
@@ -448,77 +203,10 @@ Remember: Return ONLY valid JSON, no markdown, no explanation."""
         y_column: Optional[str],
         title: str,
         x_label: str,
-        y_label: str
-    ) -> go.Figure:
+        y_label: str,
+    ):
         """Create Plotly chart based on type and data."""
-        
-        if not data:
-            # Return empty figure with message
-            fig = go.Figure()
-            fig.add_annotation(
-                text="Nessun dato disponibile per questo grafico",
-                xref="paper", yref="paper",
-                x=0.5, y=0.5, showarrow=False,
-                font=dict(size=16)
-            )
-            return fig
-        
-        # Extract data for plotting
-        x_data = [row[x_column] for row in data]
-        y_data = [row[y_column] for row in data] if y_column else None
-        
-        # Create appropriate chart
-        if chart_type == "bar":
-            fig = go.Figure(data=[
-                go.Bar(x=x_data, y=y_data, marker_color='#2E7D32')
-            ])
-            
-        elif chart_type == "pie":
-            fig = go.Figure(data=[
-                go.Pie(labels=x_data, values=y_data, hole=0.3)
-            ])
-            
-        elif chart_type == "line":
-            fig = go.Figure(data=[
-                go.Scatter(x=x_data, y=y_data, mode='lines+markers', 
-                          line=dict(color='#2E7D32', width=2),
-                          marker=dict(size=6))
-            ])
-            
-        elif chart_type == "scatter":
-            fig = go.Figure(data=[
-                go.Scatter(x=x_data, y=y_data, mode='markers',
-                          marker=dict(size=8, color='#2E7D32', opacity=0.6))
-            ])
-            
-        elif chart_type == "histogram":
-            fig = go.Figure(data=[
-                go.Histogram(x=x_data, marker_color='#2E7D32', nbinsx=30)
-            ])
-            
-        elif chart_type == "box":
-            # For box plot, we need to group by category
-            # x_column is the category, y_column is the value
-            categories = list(set(x_data))
-            fig = go.Figure()
-            for cat in categories:
-                values = [row[y_column] for row in data if row[x_column] == cat]
-                fig.add_trace(go.Box(y=values, name=str(cat)))
-        
-        else:
-            raise ValueError(f"Unsupported chart type: {chart_type}")
-        
-        # Update layout
-        fig.update_layout(
-            title=dict(text=title, x=0.5, xanchor='center', font=dict(size=18)),
-            xaxis_title=x_label,
-            yaxis_title=y_label,
-            template="plotly_white",
-            hovermode='closest',
-            height=500
-        )
-        
-        return fig
+        return create_chart(chart_type, data, x_column, y_column, title, x_label, y_label)
 
     def _run(
         self,
