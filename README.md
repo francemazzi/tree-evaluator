@@ -3,6 +3,7 @@
 [![Tests](https://github.com/francemazzi/tree-evaluator/actions/workflows/tests.yml/badge.svg)](https://github.com/francemazzi/tree-evaluator/actions/workflows/tests.yml)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![DOI](https://zenodo.org/badge/1071495173.svg)](https://doi.org/10.5281/zenodo.18676039)
 
 > **Documentazione in italiano:** [QUICKSTART.md](QUICKSTART.md) (chatbot in 5 minuti).
 
